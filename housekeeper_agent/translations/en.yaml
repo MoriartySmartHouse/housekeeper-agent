@@ -1,0 +1,36 @@
+configuration:
+  persona:
+    name: Assistant name
+    description: The name your house assistant uses in Home Assistant, e.g. Watson.
+  site_id:
+    name: Home ID
+    description: Short name for this home, given to you by your Housekeeper (lowercase letters, numbers, dashes).
+  site_key:
+    name: Home key
+    description: The secret key for this home, given to you by your Housekeeper. Keep it private.
+  central_url:
+    name: Housekeeper address
+    description: Where reports are sent. Must start with https:// (http:// only on your own network).
+  interval_minutes:
+    name: Check every (minutes)
+    description: How often the health check runs. 60 is recommended.
+  healthchecks_url:
+    name: Independent check-in URL (optional)
+    description: A second, independent service that raises the alarm if this home stops checking in.
+  silent_hours:
+    name: Silent device threshold (hours)
+    description: Flag a device that has not been heard from for this long.
+  battery_warn_pct:
+    name: Low battery warning (%)
+    description: Warn when a battery is at or below this level.
+  silent_exceptions:
+    name: Devices to ignore
+    description: Device names that should never be reported as silent (e.g. something unplugged on purpose).
+  watch_entities:
+    name: Things to watch
+    description: >-
+      Entities that must not stay in a bad state. Entity, the bad states (comma-separated, e.g. Fault,Offline)
+      and how many minutes before it counts as a problem.
+  watch:
+    name: Things to watch (old format)
+    description: Older JSON format, kept for compatibility. Use "Things to watch" instead.

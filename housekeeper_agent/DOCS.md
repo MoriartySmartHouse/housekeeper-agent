@@ -27,7 +27,8 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
 
 `central_url` must be `https://`; plain `http://` is accepted only for a private or Tailscale address.
 The App refuses to start (and says why in its log) if a required setting is blank or invalid.
-| `watch` | Optional, set by your support person: entities that must not stay in a bad state, as JSON, e.g. `{"entity": "sensor.alarm_status", "bad": ["Fault"], "for_min": 60}` |
+| `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
+| `watch` | Older JSON format of the same, still accepted |
 
 ## Good to know
 - A Zigbee device is flagged as silent after it has been unavailable for 24 h. Zigbee2MQTT itself waits

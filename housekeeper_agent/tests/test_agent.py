@@ -51,3 +51,23 @@ def test_load_options_rejects_short_key_and_public_http(tmp_path):
     p.write_text(json.dumps({"site_id": "x", "site_key": "k" * 40, "central_url": "http://a.ca"}))
     with pytest.raises(SystemExit):
         agent.load_options(p)
+
+
+def test_watch_entities_form_fields():
+    rules = agent.parse_watch_entities([{"entity": "sensor.alarm_status", "bad_states": "Fault, Offline",
+                                         "for_minutes": 30}, {"bad_states": "x"}])
+    assert rules[0] == {"entity": "sensor.alarm_status", "bad": ["Fault", "Offline"], "for_min": 30}
+    assert "invalid" in rules[1]
+
+
+def test_memory_round_trip_and_corrupt_file(tmp_path):
+    p = tmp_path / "m.json"
+    agent.save_memory({"silent_since": {"d1": "2026-10-01T00:00:00+00:00"}}, p)
+    assert agent.load_memory(p)["silent_since"]["d1"].startswith("2026-10-01")
+    p.write_text("{not json")
+    assert agent.load_memory(p) == {}
+
+
+def test_version_matches_config():
+    cfg = (Path(__file__).resolve().parents[1] / "config.yaml").read_text(encoding="utf-8")
+    assert f'version: "{agent.VERSION}"' in cfg

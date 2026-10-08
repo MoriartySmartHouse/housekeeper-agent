@@ -154,42 +154,76 @@ def _newest(sts, field):
     return max(stamps) if stamps else None
 
 
+def _last_seen(sts):
+    """Zigbee2MQTT's own last_seen timestamp (sensor.*_last_seen), when that entity is enabled.
+    It is published by z2m, so an HA restart does not reset it."""
+    for s in sts:
+        if s.get("entity_id", "").endswith("_last_seen") and s.get("state") not in BAD:
+            try:
+                return parse_ts(s.get("state"))
+            except ValueError:
+                return None
+    return None
+
+
 def check_silent_devices(states, entity_registry, device_registry, now, silent_h=24, exceptions=(),
-                         stale_h=48):
-    """A device is silent when every enabled entity it has is unavailable/unknown, and the
-    most recent change among them is older than `silent_h`. Limited to z2m (mqtt) + ESPHome."""
+                         stale_h=48, memory=None):
+    """Devices (z2m + ESPHome) that have stopped reporting.
+
+    HA resets `last_changed` of an unavailable entity on every restart (LL-50), so "unavailable since"
+    from HA alone under-counts. Two restart-proof sources are used on top of it:
+      * z2m's own `*_last_seen` sensor, when enabled for that device;
+      * `memory` — {device_id: iso time first seen silent}, kept by the agent across runs and restarts.
+        This function updates `memory` in place (adds newly silent devices, drops recovered ones).
+    """
     cid = "devices.silent"
     if not all(isinstance(x, list) for x in (states, entity_registry, device_registry)):
         return unknown(cid, "states / entity registry / device registry not readable")
+    memory = {} if memory is None else memory
     by_id = {s["entity_id"]: s for s in states if "entity_id" in s}
     names = {d.get("id"): d.get("name_by_user") or d.get("name") for d in device_registry}
-    devices = {}
+    devices, platform = {}, {}
     for e in entity_registry:
         if e.get("platform") not in SILENT_PLATFORMS or not e.get("device_id") or e.get("disabled_by"):
             continue
         st = by_id.get(e.get("entity_id"))
         if st is not None:
             devices.setdefault(e["device_id"], []).append(st)
-    silent, stale = [], []
+            platform[e["device_id"]] = e.get("platform")
+    silent, stale, no_last_seen = [], [], []
     for dev_id, sts in devices.items():
         name = names.get(dev_id) or dev_id
+        if platform[dev_id] == "mqtt" and not any(s["entity_id"].endswith("_last_seen") for s in sts):
+            no_last_seen.append(name)
         if name in exceptions:
+            memory.pop(dev_id, None)
             continue
+        seen = _last_seen(sts)
         if all(s.get("state") in BAD for s in sts):
-            last = _newest(sts, "last_changed")
-            if last and now - last > timedelta(hours=silent_h):
-                silent.append((name, hours(now - last)))
+            candidates = [t for t in (_newest(sts, "last_changed"), parse_ts(memory.get(dev_id)), seen) if t]
+            since = min(candidates) if candidates else now
+            memory.setdefault(dev_id, since.isoformat())
+            if now - since > timedelta(hours=silent_h):
+                silent.append((name, hours(now - since)))
+            continue
+        memory.pop(dev_id, None)
+        if seen and now - seen > timedelta(hours=silent_h):
+            silent.append((name, hours(now - seen)))
             continue
         # Not unavailable, but nothing heard: with z2m availability off (the default) a dead
         # device keeps its last value forever. last_reported moves on every message received.
-        heard = _newest(sts, "last_reported") or _newest(sts, "last_updated")
+        heard = seen or _newest(sts, "last_reported") or _newest(sts, "last_updated")
         if heard and now - heard > timedelta(hours=stale_h):
             stale.append((name, hours(now - heard)))
+    for dev_id in [d for d in memory if d not in devices]:
+        memory.pop(dev_id)
     silent.sort(key=lambda x: -x[1])
     stale.sort(key=lambda x: -x[1])
     ev = {"devices_checked": len(devices),
           "silent": [{"name": n, "silent_h": h} for n, h in silent],
-          "not_heard": [{"name": n, "h": h} for n, h in stale]}
+          "not_heard": [{"name": n, "h": h} for n, h in stale],
+          "watching_since_restart": len(memory),
+          "zigbee_without_last_seen": sorted(no_last_seen)[:60]}
     if not devices:
         return unknown(cid, "no z2m/ESPHome devices found — registry format changed?")
     if stale and not silent:
@@ -200,7 +234,8 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
         return result(cid, WARN, f"{len(silent)} devices silent > {silent_h} h: {listed}",
                       f"{len(silent)} device(s) have stopped reporting and may need a battery or a reset.",
                       "household", ev)
-    return result(cid, PASS, f"all {len(devices)} devices reporting", evidence=ev)
+    note = f"; {len(memory)} unavailable, under {silent_h} h so far" if memory else ""
+    return result(cid, PASS, f"all {len(devices)} devices reporting{note}", evidence=ev)
 
 
 def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_platforms=("mobile_app",)):

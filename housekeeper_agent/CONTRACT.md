@@ -15,3 +15,5 @@ Review each HA release's "Backward-incompatible changes" against this list.
 | 8 | Core WS | `persistent_notification/get` | list (or dict) of `notification_id`, `title` | ha.notifications |
 | 9 | Core REST | `POST /api/states/sensor.housekeeper_status` | (write — our own sensor only) | house status |
 | 10 | Conventions | `update.*` state `on` = update available; battery = `device_class: battery` + `%`; z2m entities have platform `mqtt` | | updates, battery, silent |
+| 11 | Conventions | z2m `sensor.*_last_seen` state = ISO timestamp of last message (when enabled) | | silent |
+| 12 | Behaviour | HA resets `last_changed` of unavailable entities on restart → agent keeps `/data/memory.json` | | silent |

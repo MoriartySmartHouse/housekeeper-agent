@@ -1,5 +1,5 @@
 name: Housekeeper Agent
-version: "0.1.0"
+version: "0.1.1"
 slug: housekeeper_agent
 description: Hourly read-only health check of this home; reports to the Housekeeper service.
 url: https://github.com/MoriartySmartHouse/housekeeper-agent
@@ -22,6 +22,7 @@ options:
   silent_hours: 24
   battery_warn_pct: 25
   silent_exceptions: []
+  watch_entities: []
   watch: []
 schema:
   persona: match(^.{1,24}$)
@@ -34,5 +35,9 @@ schema:
   battery_warn_pct: int(5,60)
   silent_exceptions:
     - str
+  watch_entities:
+    - entity: str
+      bad_states: str
+      for_minutes: int(1,10080)
   watch:
     - str

@@ -155,3 +155,38 @@ def test_first_backup_in_progress_is_not_fail():
 def test_notification_titles_never_leave_the_house():
     r = checks.check_notifications([{"notification_id": "x", "title": "Steve arrived home"}])
     assert "Steve" not in str(r)
+
+
+# ---- 0.1.1: restart-proof silent detection (LL-50 — what fooled 0.1.0 on its first real run)
+
+def test_restart_resets_ha_clock_but_memory_remembers():
+    """Device dead for weeks; HA restarted 16 h ago so last_changed says 16 h. Memory says 10 days."""
+    states, ents, devs = _device_fixture("unavailable", 16)
+    memory = {"d1": iso(240)}
+    r = checks.check_silent_devices(states, ents, devs, NOW, memory=memory)
+    assert r["status"] == "WARN" and "10.0 d" in r["reason"]
+
+
+def test_memory_starts_counting_and_drops_recovered_devices():
+    states, ents, devs = _device_fixture("unavailable", 16)
+    memory = {}
+    r = checks.check_silent_devices(states, ents, devs, NOW, memory=memory)
+    assert r["status"] == "PASS" and "under 24 h" in r["reason"] and "d1" in memory
+    later = NOW + timedelta(hours=9)
+    assert checks.check_silent_devices(states, ents, devs, later, memory=memory)["status"] == "WARN"
+    states2, _, _ = _device_fixture("21.0", 0)
+    checks.check_silent_devices(states2, ents, devs, later, memory=memory)
+    assert "d1" not in memory
+
+
+def test_z2m_last_seen_sensor_is_trusted_over_restarts():
+    states, ents, devs = _device_fixture("21.0", 1)  # HA shows a fresh-looking value
+    states.append({"entity_id": "sensor.garage_weather_last_seen", "state": iso(100), "last_changed": iso(1)})
+    ents.append({"entity_id": "sensor.garage_weather_last_seen", "device_id": "d1", "platform": "mqtt"})
+    r = checks.check_silent_devices(states, ents, devs, NOW)
+    assert r["status"] == "WARN" and r["evidence"]["zigbee_without_last_seen"] == []
+
+
+def test_lists_zigbee_devices_without_last_seen():
+    r = checks.check_silent_devices(*_device_fixture("21.0", 1), NOW)
+    assert r["evidence"]["zigbee_without_last_seen"] == ["Garage Weather"]

@@ -23,11 +23,12 @@ from datetime import UTC, datetime
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
 OPTIONS_FILE = "/data/options.json"
+MEMORY_FILE = "/data/memory.json"
 STATUS_ENTITY = "sensor.housekeeper_status"
 CORE_RETRY_S = 60
 MIN_KEY_LEN = 32
@@ -122,8 +123,40 @@ def central_url_allowed(url):
     return ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10")
 
 
+def load_memory(path=MEMORY_FILE):
+    """The agent's own memory across runs (e.g. when a device first went silent). Never fatal."""
+    try:
+        with open(path) as f:
+            mem = json.load(f)
+        return mem if isinstance(mem, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_memory(mem, path=MEMORY_FILE):
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(mem, f)
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("could not save memory: %s", exc)
+
+
+def parse_watch_entities(raw):
+    """`watch_entities` form fields: entity, bad_states (comma-separated), for_minutes."""
+    rules = []
+    for w in raw or []:
+        if not isinstance(w, dict) or not isinstance(w.get("entity"), str):
+            rules.append({"invalid": str(w)[:80], "error": "needs an entity"})
+            continue
+        bad = [b.strip() for b in str(w.get("bad_states", "")).split(",") if b.strip()]
+        rules.append({"entity": w["entity"].strip(), "bad": bad, "for_min": int(w.get("for_minutes", 60))})
+    return rules
+
+
 def parse_watch(raw):
-    """Each `watch` entry is a JSON object. Bad entries are kept as errors, reported as UNKNOWN."""
+    """Legacy `watch`: each entry a JSON object string. Bad entries are kept as errors -> UNKNOWN."""
     rules = []
     for w in raw or []:
         try:
@@ -170,8 +203,9 @@ def gather(token):
         core.close()
 
 
-def run_checks(data, opts, now):
+def run_checks(data, opts, now, memory=None):
     s = data.get("states")
+    memory = {} if memory is None else memory
     ents = data.get("entity_registry")
     out = []
     if data.get("errors", {}).get("core/websocket"):
@@ -187,7 +221,8 @@ def run_checks(data, opts, now):
         safe("ha.notifications", checks.check_notifications, data.get("notifications")),
         safe("ha.updates", checks.check_updates, s),
         safe("devices.silent", checks.check_silent_devices, s, ents, data.get("device_registry"), now,
-             silent_h=opts.get("silent_hours", 24), exceptions=opts.get("silent_exceptions", [])),
+             silent_h=opts.get("silent_hours", 24), exceptions=opts.get("silent_exceptions", []),
+             memory=memory.setdefault("silent_since", {})),
         safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25)),
     ]
     for rule in opts.get("watch", []):
@@ -239,7 +274,10 @@ def write_house_status(token, reply, results, persona="Watson"):
 def cycle(opts, token):
     now = datetime.now(UTC)
     data, ha_version = gather(token)
-    results = run_checks(data, opts, now)
+    memory = load_memory()
+    results = run_checks(data, opts, now, memory)
+    if data.get("states") is not None:  # don't overwrite memory with nothing when HA was unreadable
+        save_memory(memory)
     card = build_card(opts, ha_version, results, data["errors"], now)
     reply = None
     try:
@@ -266,7 +304,7 @@ def load_options(path=OPTIONS_FILE):
         raise SystemExit("central_url must be https:// (plain http only to a private/tailnet address)")
     if len(opts.get("site_key", "")) < MIN_KEY_LEN:
         raise SystemExit(f"site_key must be at least {MIN_KEY_LEN} characters")
-    opts["watch"] = parse_watch(opts.get("watch"))
+    opts["watch"] = parse_watch_entities(opts.get("watch_entities")) + parse_watch(opts.get("watch"))
     return opts
 
 
