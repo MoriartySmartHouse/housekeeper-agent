@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pytest ruff "websockets>=13,<16"
+      - run: ruff check housekeeper_agent
+      - run: pytest -q housekeeper_agent/tests
+  app-lint:
+    # Validates config.yaml against what the Supervisor accepts.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: frenck/action-addon-linter@v2
+        with:
+          path: "./housekeeper_agent"

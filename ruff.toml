@@ -1,0 +1,12 @@
+line-length = 120
+target-version = "py313"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "RUF"]
+ignore = [
+  "S101",  # assert in tests
+  "S310",  # urlopen of configured URLs is the point of this code
+]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["E402", "S105", "S106"]

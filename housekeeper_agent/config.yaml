@@ -21,7 +21,6 @@ options:
   site_key: ""
   central_url: ""
   interval_minutes: 60
-  healthchecks_url: ""
   silent_hours: 24
   battery_warn_pct: 25
   silent_exceptions: []
@@ -31,8 +30,8 @@ schema:
   site_id: match(^[a-z0-9-]{2,32}$)
   site_key: password
   central_url: url
-  interval_minutes: int(5,1440)
-  healthchecks_url: str?
+  interval_minutes: int(5,90)
+  healthchecks_url: url?
   silent_hours: int(1,720)
   battery_warn_pct: int(5,60)
   silent_exceptions:

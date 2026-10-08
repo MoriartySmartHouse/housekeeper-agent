@@ -1,11 +1,11 @@
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-import checks  # noqa: E402
+import checks
 
-NOW = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
 
 
 def iso(h_ago):
@@ -39,8 +39,10 @@ def test_offsite_backup_fresh_passes_and_local_only_fails():
 
 
 def test_offsite_backup_ages_and_old_agent_ids_format():
-    assert checks.check_backup_offsite({"backups": [{"date": iso(30), "agent_ids": ["cloud.cloud"]}]}, NOW)["status"] == "WARN"
-    assert checks.check_backup_offsite({"backups": [{"date": iso(80), "agent_ids": ["cloud.cloud"]}]}, NOW)["status"] == "FAIL"
+    def offsite(h):
+        return checks.check_backup_offsite({"backups": [{"date": iso(h), "agent_ids": ["cloud.cloud"]}]}, NOW)
+    assert offsite(30)["status"] == "WARN"
+    assert offsite(80)["status"] == "FAIL"
 
 
 def test_last_attempt_failed():
@@ -119,3 +121,37 @@ def test_watched_estate_fault():
     assert checks.check_watched_entity(st, rule, NOW)["status"] == "WARN"
     st[0]["state"] = "Normal"
     assert checks.check_watched_entity(st, rule, NOW)["status"] == "PASS"
+
+
+# ---- review fixes (Fable review 2026-10-08)
+
+def test_stale_device_flagged_when_z2m_availability_off():
+    """HIGH-1: availability off -> dead device keeps its last value; must not PASS."""
+    states, ents, devs = _device_fixture("21.4", 72)
+    for s in states:
+        s["last_reported"] = iso(72)
+    r = checks.check_silent_devices(states, ents, devs, NOW)
+    assert r["status"] == "WARN" and "not heard" in r["reason"] and r["audience"] == "operator"
+
+
+def test_missing_timestamps_do_not_crash():
+    states, ents, devs = _device_fixture("unavailable", 72)
+    for s in states:
+        s.pop("last_changed")
+    assert checks.check_silent_devices(states, ents, devs, NOW)["status"] == "PASS"
+
+
+def test_addon_offsite_backup_is_unknown_not_fail():
+    info = {"backups": [{"date": iso(1), "agents": {"hassio.local": {}}}]}
+    r = checks.check_backup_offsite(info, NOW, states=[{"entity_id": "sensor.backup_state", "state": "backed_up"}])
+    assert r["status"] == "UNKNOWN"
+
+
+def test_first_backup_in_progress_is_not_fail():
+    info = {"last_attempted_automatic_backup": iso(0.5), "last_completed_automatic_backup": None}
+    assert checks.check_backup_last_attempt(info, NOW)["status"] == "PASS"
+
+
+def test_notification_titles_never_leave_the_house():
+    r = checks.check_notifications([{"notification_id": "x", "title": "Steve arrived home"}])
+    assert "Steve" not in str(r)

@@ -3,23 +3,25 @@
 read (Supervisor + Core via the Supervisor proxy) -> checks -> report card -> POST to central
 -> write the household status back into this house's HA as sensor.housekeeper_status.
 
-Read-only towards HA except that one sensor it owns. Every read goes through `fetch()` so a
-failure becomes an UNKNOWN check, never a crash and never a PASS.
+Read-only towards HA except that one sensor it owns (enforced by tests/test_write_guard.py).
+Every read goes through `fetch()` and every check through `safe()`, so a failure becomes an
+UNKNOWN check, never a crash, never a missing report, and never a PASS.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import socket
 import time
+import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
-
-from websockets.sync.client import connect
+from datetime import UTC, datetime
 
 import checks
+from websockets.sync.client import connect
 
 VERSION = "0.1.0"
 SCHEMA = 1
@@ -27,6 +29,8 @@ SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
 OPTIONS_FILE = "/data/options.json"
 STATUS_ENTITY = "sensor.housekeeper_status"
+CORE_RETRY_S = 60
+MIN_KEY_LEN = 32
 
 log = logging.getLogger("housekeeper")
 
@@ -34,13 +38,14 @@ log = logging.getLogger("housekeeper")
 # ---------------------------------------------------------------- IO
 
 class Core:
-    """Minimal Core websocket client (through the Supervisor proxy)."""
+    """Minimal Core websocket client (through the Supervisor proxy). Every recv is timed."""
 
     def __init__(self, token):
         self.ws = connect(CORE_WS, open_timeout=15, max_size=64 * 1024 * 1024)
-        assert json.loads(self.ws.recv())["type"] == "auth_required"
+        if json.loads(self.ws.recv(timeout=15)).get("type") != "auth_required":
+            raise RuntimeError("core websocket: unexpected greeting")
         self.ws.send(json.dumps({"type": "auth", "access_token": token}))
-        reply = json.loads(self.ws.recv())
+        reply = json.loads(self.ws.recv(timeout=15))
         if reply.get("type") != "auth_ok":
             raise RuntimeError(f"core websocket auth failed: {reply.get('type')}")
         self.ha_version = reply.get("ha_version")
@@ -62,13 +67,23 @@ class Core:
         self.ws.close()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: urllib would re-send the bearer key and turn the POST into a GET."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
 def http(method, url, token=None, body=None, timeout=30):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _opener.open(req, timeout=timeout) as resp:
         raw = resp.read()
         return json.loads(raw) if raw else None
 
@@ -77,19 +92,70 @@ def fetch(label, fn, errors):
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001 — any failure becomes an UNKNOWN downstream
-        errors[label] = f"{type(exc).__name__}: {exc}"
+        errors[label] = f"{type(exc).__name__}: {exc}"[:300]
         log.warning("read %s failed: %s", label, errors[label])
         return None
 
 
+def safe(cid, fn, *args, **kwargs):
+    """Run one check; a bug or surprise in it becomes UNKNOWN for that check only."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        log.exception("check %s raised", cid)
+        return checks.unknown(cid, f"check raised {type(exc).__name__}")
+
+
+# ---------------------------------------------------------------- options
+
+def central_url_allowed(url):
+    """https always; plain http only to a private / tailnet address (MVP on the LAN)."""
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme == "https":
+        return True
+    if parts.scheme != "http" or not parts.hostname:
+        return False
+    try:
+        ip = ipaddress.ip_address(parts.hostname)
+    except ValueError:
+        return parts.hostname.endswith((".local", ".ts.net"))
+    return ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10")
+
+
+def parse_watch(raw):
+    """Each `watch` entry is a JSON object. Bad entries are kept as errors, reported as UNKNOWN."""
+    rules = []
+    for w in raw or []:
+        try:
+            rule = json.loads(w) if isinstance(w, str) else w
+            if not isinstance(rule, dict) or not isinstance(rule.get("entity"), str):
+                raise ValueError("needs an object with 'entity'")
+            if not isinstance(rule.get("bad", []), list):
+                raise ValueError("'bad' must be a list")
+            rules.append(rule)
+        except (ValueError, TypeError) as exc:
+            rules.append({"invalid": str(w)[:80], "error": str(exc)})
+    return rules
+
+
 # ---------------------------------------------------------------- one cycle
+
+def connect_core(token, errors):
+    core = fetch("core/websocket", lambda: Core(token), errors)
+    if core is None:
+        # One retry: a cycle that lands on an HA restart/update must not page as "Core down".
+        time.sleep(CORE_RETRY_S)
+        errors.pop("core/websocket", None)
+        core = fetch("core/websocket", lambda: Core(token), errors)
+    return core
+
 
 def gather(token):
     errors = {}
     data = {"errors": errors}
     sup = fetch("supervisor/resolution", lambda: http("GET", f"{SUPERVISOR}/resolution/info", token), errors)
     data["resolution"] = sup.get("data") if isinstance(sup, dict) else None
-    core = fetch("core/websocket", lambda: Core(token), errors)
+    core = connect_core(token, errors)
     if core is None:
         return data, None
     try:
@@ -106,26 +172,29 @@ def gather(token):
 
 def run_checks(data, opts, now):
     s = data.get("states")
+    ents = data.get("entity_registry")
     out = []
     if data.get("errors", {}).get("core/websocket"):
         out.append(checks.result("core.reachable", checks.FAIL,
-                                 f"HA Core not reachable: {data['errors']['core/websocket']}"))
+                                 f"HA Core not reachable after retry: {data['errors']['core/websocket']}"))
     else:
         out.append(checks.result("core.reachable", checks.PASS, "HA Core answering"))
     out += [
-        checks.check_supervisor(data.get("resolution")),
-        checks.check_backup_offsite(data.get("backup_info"), now),
-        checks.check_backup_last_attempt(data.get("backup_info"), now),
-        checks.check_repairs(data.get("repairs")),
-        checks.check_notifications(data.get("notifications")),
-        checks.check_updates(s),
-        checks.check_silent_devices(s, data.get("entity_registry"), data.get("device_registry"), now,
-                                    silent_h=opts.get("silent_hours", 24),
-                                    exceptions=opts.get("silent_exceptions", [])),
-        checks.check_batteries(s, data.get("entity_registry"), warn_pct=opts.get("battery_warn_pct", 25)),
+        safe("supervisor.health", checks.check_supervisor, data.get("resolution")),
+        safe("backup.offsite", checks.check_backup_offsite, data.get("backup_info"), now, states=s),
+        safe("backup.last_attempt", checks.check_backup_last_attempt, data.get("backup_info"), now),
+        safe("ha.repairs", checks.check_repairs, data.get("repairs")),
+        safe("ha.notifications", checks.check_notifications, data.get("notifications")),
+        safe("ha.updates", checks.check_updates, s),
+        safe("devices.silent", checks.check_silent_devices, s, ents, data.get("device_registry"), now,
+             silent_h=opts.get("silent_hours", 24), exceptions=opts.get("silent_exceptions", [])),
+        safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25)),
     ]
     for rule in opts.get("watch", []):
-        out.append(checks.check_watched_entity(s, rule, now))
+        if "invalid" in rule:
+            out.append(checks.unknown("watch.invalid", f"bad watch entry {rule['invalid']!r}: {rule['error']}"))
+            continue
+        out.append(safe(f"watch.{rule['entity']}", checks.check_watched_entity, s, rule, now))
     return out
 
 
@@ -142,24 +211,33 @@ def build_card(opts, ha_version, results, errors, now):
     }
 
 
+def household_list(reply, results):
+    """Central's answer wins, including an empty list (= everything silenced or fine).
+    Only when central could not be reached do we fall back to the local checks."""
+    if isinstance(reply, dict) and isinstance(reply.get("household"), list):
+        return [str(m)[:200] for m in reply["household"][:10]]
+    return [r["household"] for r in results
+            if r.get("household") and r.get("status") in (checks.WARN, checks.FAIL)]
+
+
 def write_house_status(token, reply, results, persona="Watson"):
     """The one write: our own sensor, so the household sees their house assistant's status in HA."""
-    messages = (reply or {}).get("household") or [r["household"] for r in results if r.get("household")]
+    messages = household_list(reply, results)
     state = "attention" if messages else "all_good"
+    summary = "all good" if not messages else f"{len(messages)} things need attention"
     body = {"state": state, "attributes": {
         "friendly_name": persona,
         "icon": "mdi:shield-home" if state == "all_good" else "mdi:shield-alert",
         "messages": messages,
-        "summary": f"{persona}: " + ((reply or {}).get("summary")
-                                     or ("all good" if not messages else f"{len(messages)} things need attention")),
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "summary": f"{persona}: {summary}",
+        "checked_at": datetime.now(UTC).isoformat(),
         "central_reached": reply is not None,
     }}
     http("POST", f"{SUPERVISOR}/core/api/states/{STATUS_ENTITY}", token, body)
 
 
 def cycle(opts, token):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     data, ha_version = gather(token)
     results = run_checks(data, opts, now)
     card = build_card(opts, ha_version, results, data["errors"], now)
@@ -175,27 +253,37 @@ def cycle(opts, token):
         log.error("could not write %s: %s", STATUS_ENTITY, exc)
     if opts.get("healthchecks_url"):
         try:
-            urllib.request.urlopen(opts["healthchecks_url"], timeout=10)
+            _opener.open(opts["healthchecks_url"], timeout=10)
         except Exception as exc:  # noqa: BLE001
             log.warning("healthchecks ping failed: %s", exc)
     return card, reply
 
 
+def load_options(path=OPTIONS_FILE):
+    with open(path) as f:
+        opts = json.load(f)
+    if not central_url_allowed(opts.get("central_url", "")):
+        raise SystemExit("central_url must be https:// (plain http only to a private/tailnet address)")
+    if len(opts.get("site_key", "")) < MIN_KEY_LEN:
+        raise SystemExit(f"site_key must be at least {MIN_KEY_LEN} characters")
+    opts["watch"] = parse_watch(opts.get("watch"))
+    return opts
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     socket.setdefaulttimeout(60)
-    with open(OPTIONS_FILE) as f:
-        opts = json.load(f)
-    opts["watch"] = [json.loads(w) if isinstance(w, str) else w for w in opts.get("watch", [])]
+    opts = load_options()
     token = os.environ["SUPERVISOR_TOKEN"]
     interval = max(5, int(opts.get("interval_minutes", 60))) * 60
     log.info("Housekeeper Agent %s for site %s, every %d min", VERSION, opts["site_id"], interval // 60)
     while True:
+        started = time.monotonic()
         try:
             cycle(opts, token)
-        except Exception:  # noqa: BLE001 — never die; central will see silence if this keeps failing
+        except Exception:
             log.exception("cycle failed")
-        time.sleep(interval)
+        time.sleep(max(60, interval - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":

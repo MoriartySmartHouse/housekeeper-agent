@@ -8,7 +8,7 @@ never PASS. A breaking HA change must look like a grey check, not a healthy hous
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 PASS, WARN, FAIL, UNKNOWN = "PASS", "WARN", "FAIL", "UNKNOWN"
 
@@ -32,9 +32,9 @@ def parse_ts(value):
     if not value:
         return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.fromtimestamp(value, tz=UTC)
     dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def hours(delta: timedelta) -> float:
@@ -55,7 +55,11 @@ def _backup_locations(backup):
     return None
 
 
-def check_backup_offsite(info, now, warn_h=26, fail_h=50):
+# Add-ons that copy backups off-site outside HA's backup agents (e.g. Google Drive Backup).
+OFFSITE_ADDON_ENTITIES = ("sensor.backup_state",)
+
+
+def check_backup_offsite(info, now, warn_h=26, fail_h=50, states=None):
     cid = "backup.offsite"
     if not isinstance(info, dict) or not isinstance(info.get("backups"), list):
         return unknown(cid, "backup/info has no 'backups' list")
@@ -69,6 +73,9 @@ def check_backup_offsite(info, now, warn_h=26, fail_h=50):
         if offsite and when and (newest is None or when > newest[0]):
             newest = (when, offsite)
     if newest is None:
+        addon = [s.get("entity_id") for s in states or [] if s.get("entity_id") in OFFSITE_ADDON_ENTITIES]
+        if addon:
+            return unknown(cid, f"off-site copy is handled by an add-on ({', '.join(addon)}), not yet read")
         return result(cid, FAIL, "no backup stored off-site",
                       "Your home has no backup stored outside the house.", "household")
     age = hours(now - newest[0])
@@ -88,7 +95,10 @@ def check_backup_last_attempt(info, now, grace_h=2):
     ev = {"attempted": attempted and attempted.isoformat(), "completed": completed and completed.isoformat()}
     if attempted is None:
         return result(cid, WARN, "automatic backups have never run", evidence=ev)
-    if completed is None or (attempted > completed and now - attempted > timedelta(hours=grace_h)):
+    in_grace = now - attempted <= timedelta(hours=grace_h)
+    if completed is None and in_grace:
+        return result(cid, PASS, "first automatic backup in progress", evidence=ev)
+    if completed is None or (attempted > completed and not in_grace):
         return result(cid, FAIL, "last automatic backup attempt did not complete", evidence=ev)
     return result(cid, PASS, "last automatic backup completed", evidence=ev)
 
@@ -115,10 +125,10 @@ def check_notifications(notifications):
         notifications = list(notifications.values())
     if not isinstance(notifications, list):
         return unknown(cid, "persistent_notification/get returned no list")
-    titles = [n.get("title") or n.get("notification_id") for n in notifications]
-    ev = {"count": len(titles), "titles": titles[:20]}
-    if titles:
-        return result(cid, WARN, f"{len(titles)} persistent notifications", evidence=ev)
+    # Count only: titles are free text written by automations and can reveal presence/location.
+    ev = {"count": len(notifications)}
+    if notifications:
+        return result(cid, WARN, f"{len(notifications)} persistent notifications", evidence=ev)
     return result(cid, PASS, "no persistent notifications", evidence=ev)
 
 
@@ -139,7 +149,13 @@ SILENT_PLATFORMS = ("mqtt", "esphome")
 BAD = ("unavailable", "unknown")
 
 
-def check_silent_devices(states, entity_registry, device_registry, now, silent_h=24, exceptions=()):
+def _newest(sts, field):
+    stamps = [t for t in (parse_ts(s.get(field)) for s in sts) if t]
+    return max(stamps) if stamps else None
+
+
+def check_silent_devices(states, entity_registry, device_registry, now, silent_h=24, exceptions=(),
+                         stale_h=48):
     """A device is silent when every enabled entity it has is unavailable/unknown, and the
     most recent change among them is older than `silent_h`. Limited to z2m (mqtt) + ESPHome."""
     cid = "devices.silent"
@@ -154,19 +170,31 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
         st = by_id.get(e.get("entity_id"))
         if st is not None:
             devices.setdefault(e["device_id"], []).append(st)
-    silent = []
+    silent, stale = [], []
     for dev_id, sts in devices.items():
         name = names.get(dev_id) or dev_id
         if name in exceptions:
             continue
         if all(s.get("state") in BAD for s in sts):
-            last = max((parse_ts(s.get("last_changed")) for s in sts), default=None)
+            last = _newest(sts, "last_changed")
             if last and now - last > timedelta(hours=silent_h):
                 silent.append((name, hours(now - last)))
+            continue
+        # Not unavailable, but nothing heard: with z2m availability off (the default) a dead
+        # device keeps its last value forever. last_reported moves on every message received.
+        heard = _newest(sts, "last_reported") or _newest(sts, "last_updated")
+        if heard and now - heard > timedelta(hours=stale_h):
+            stale.append((name, hours(now - heard)))
     silent.sort(key=lambda x: -x[1])
-    ev = {"devices_checked": len(devices), "silent": [{"name": n, "silent_h": h} for n, h in silent]}
+    stale.sort(key=lambda x: -x[1])
+    ev = {"devices_checked": len(devices),
+          "silent": [{"name": n, "silent_h": h} for n, h in silent],
+          "not_heard": [{"name": n, "h": h} for n, h in stale]}
     if not devices:
         return unknown(cid, "no z2m/ESPHome devices found — registry format changed?")
+    if stale and not silent:
+        listed = ", ".join(f"{n} ({round(h / 24, 1)} d)" for n, h in stale[:5])
+        return result(cid, WARN, f"{len(stale)} devices not heard from in > {stale_h} h: {listed}", evidence=ev)
     if silent:
         listed = ", ".join(f"{n} ({round(h / 24, 1)} d)" for n, h in silent[:5])
         return result(cid, WARN, f"{len(silent)} devices silent > {silent_h} h: {listed}",
