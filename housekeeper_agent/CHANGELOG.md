@@ -1,13 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 - Home Assistant now downloads a prebuilt image for this App instead of building it on your machine:
   faster updates, less wear on the disk, no build failures. Your settings are kept.
 - The App now runs under its own AppArmor profile (Python, its own code and `/data`, outbound network
   only). The security rating shown in Home Assistant rises from 7 to 8
   (from 5 to 6 on Home Assistant systems older than September 2026).
-
-## 0.1.3
 - Stops cleanly when the App is stopped, restarted or updated (it used to be force-killed after 10 seconds,
   leaving the App shown in an error state).
 
