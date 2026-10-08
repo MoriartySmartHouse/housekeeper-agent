@@ -13,6 +13,7 @@ import ipaddress
 import json
 import logging
 import os
+import signal
 import socket
 import time
 import urllib.parse
@@ -23,7 +24,7 @@ from datetime import UTC, datetime
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -308,8 +309,17 @@ def load_options(path=OPTIONS_FILE):
     return opts
 
 
+def stop(signum, _frame):
+    """The agent is PID 1 in its container (init: false), where SIGTERM is ignored unless handled: without this,
+    every App stop/restart/update waited 10 s and ended in SIGKILL (exit 137, App state "error")."""
+    log.info("stopping (signal %d)", signum)
+    raise SystemExit(0)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     socket.setdefaulttimeout(60)
     opts = load_options()
     token = os.environ["SUPERVISOR_TOKEN"]

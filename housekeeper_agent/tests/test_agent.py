@@ -1,7 +1,10 @@
 import json
+import signal
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import agent
@@ -71,3 +74,16 @@ def test_memory_round_trip_and_corrupt_file(tmp_path):
 def test_version_matches_config():
     cfg = (Path(__file__).resolve().parents[1] / "config.yaml").read_text(encoding="utf-8")
     assert f'version: "{agent.VERSION}"' in cfg
+
+
+def test_sigterm_stops_cleanly(monkeypatch):
+    """As PID 1 the agent must handle SIGTERM itself, or Supervisor SIGKILLs it after 10 s (exit 137)."""
+    handlers = {}
+    monkeypatch.setattr(agent.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+    monkeypatch.setattr(agent, "load_options", lambda: {"site_id": "test", "interval_minutes": 60})
+    monkeypatch.setattr(agent, "cycle", lambda opts, token: None)
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "t")
+    monkeypatch.setattr(agent.time, "sleep", lambda s: handlers[signal.SIGTERM](signal.SIGTERM, None))
+    with pytest.raises(SystemExit) as exc:
+        agent.main()
+    assert exc.value.code == 0

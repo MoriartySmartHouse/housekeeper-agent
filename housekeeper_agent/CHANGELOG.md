@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+- Stops cleanly when the App is stopped, restarted or updated (it used to be force-killed after 10 seconds,
+  leaving the App shown in an error state).
+
 ## 0.1.2
 - Silent devices: the "Zigbee devices without a last-seen sensor" list now shows only Zigbee2MQTT devices,
   not the Zigbee2MQTT bridge or other MQTT devices (e.g. BirdNET-Go).
