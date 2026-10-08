@@ -7,14 +7,12 @@ arch:
   - aarch64
   - amd64
 init: false
-startup: application
-boot: auto
 # Reads Core (REST + websocket) through the Supervisor proxy. NOTE: this proxy acts with
 # admin rights on Core; the agent's code is read-only except for sensor.housekeeper_status.
 homeassistant_api: true
-# Supervisor API at the lowest role: /resolution/info and other /info endpoints only.
+# Supervisor API at the lowest role ("default", left implicit): /resolution/info and other /info only.
+# Never add hassio_role: manager/admin.
 hassio_api: true
-hassio_role: default
 options:
   persona: Watson
   site_id: ""
