@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+- Silent devices: the "Zigbee devices without a last-seen sensor" list now shows only Zigbee2MQTT devices,
+  not the Zigbee2MQTT bridge or other MQTT devices (e.g. BirdNET-Go).
+- Silent devices: devices that are unavailable but not yet past the silent threshold are now named, with
+  since when, in the report details.
+
 ## 0.1.1
 - Silent devices: no longer fooled by Home Assistant restarts. The agent now remembers when a device went
   quiet, and uses Zigbee2MQTT's own "last seen" time where that sensor is enabled.

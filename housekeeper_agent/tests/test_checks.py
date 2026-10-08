@@ -70,7 +70,8 @@ def _device_fixture(state, h_ago):
               {"entity_id": "sensor.garage_weather_battery", "state": state, "last_changed": iso(h_ago),
                "attributes": {}}]
     ents = [{"entity_id": s["entity_id"], "device_id": "d1", "platform": "mqtt", "disabled_by": None} for s in states]
-    devs = [{"id": "d1", "name": "Garage Weather", "name_by_user": None}]
+    devs = [{"id": "d1", "name": "Garage Weather", "name_by_user": None,
+             "identifiers": [["mqtt", "zigbee2mqtt_0x00158d0001a2b3c4"]], "via_device_id": "bridge"}]
     return states, ents, devs
 
 
@@ -190,3 +191,50 @@ def test_z2m_last_seen_sensor_is_trusted_over_restarts():
 def test_lists_zigbee_devices_without_last_seen():
     r = checks.check_silent_devices(*_device_fixture("21.0", 1), NOW)
     assert r["evidence"]["zigbee_without_last_seen"] == ["Garage Weather"]
+
+
+# ---- 0.1.2: what the first live report showed
+
+def _mqtt_device(dev_id, name, ident, via=None):
+    state = {"entity_id": f"sensor.{dev_id}_status", "state": "ok", "last_changed": iso(1),
+             "last_reported": iso(1), "attributes": {}}
+    ent = {"entity_id": state["entity_id"], "device_id": dev_id, "platform": "mqtt", "disabled_by": None}
+    dev = {"id": dev_id, "name": name, "name_by_user": None, "identifiers": [["mqtt", ident]], "via_device_id": via}
+    return state, ent, dev
+
+
+def test_zigbee_without_last_seen_lists_only_z2m_devices():
+    """Live case: the bridge and BirdNET-Go (other MQTT discovery) were listed as Zigbee devices."""
+    fixtures = [_mqtt_device("bridge", "Zigbee2MQTT Bridge", "zigbee2mqtt_bridge_0x00124b0024c1d2e3"),
+                _mqtt_device("bn", "BirdNET-Go", "birdnet-go"),
+                _mqtt_device("bn1", "BirdNET-Go Stream 1", "birdnet-go_stream_1", via="bn"),
+                _mqtt_device("d2", "Hall Motion", "zigbee2mqtt_0x00158d0001a2b3c5", via="bridge"),
+                _mqtt_device("d3", "Porch Button", "some_future_id", via="bridge")]  # via the bridge counts
+    states, ents, devs = _device_fixture("21.0", 1)
+    states += [f[0] for f in fixtures]
+    ents += [f[1] for f in fixtures]
+    devs += [f[2] for f in fixtures]
+    r = checks.check_silent_devices(states, ents, devs, NOW)
+    assert r["status"] == "PASS" and r["evidence"]["devices_checked"] == 6
+    assert r["evidence"]["zigbee_without_last_seen"] == ["Garage Weather", "Hall Motion", "Porch Button"]
+
+
+def test_unavailable_under_threshold_are_named_in_evidence():
+    states, ents, devs = _device_fixture("unavailable", 16)
+    r = checks.check_silent_devices(states, ents, devs, NOW, memory={})
+    assert r["status"] == "PASS" and "Garage Weather" not in r["reason"]
+    assert r["evidence"]["unavailable_under_threshold"] == [{"name": "Garage Weather", "since": iso(16), "h": 16.0}]
+    assert checks.check_silent_devices(*_device_fixture("unavailable", 72), NOW)["evidence"][
+        "unavailable_under_threshold"] == []
+
+
+def test_unavailable_under_threshold_list_is_bounded():
+    states, ents, devs = [], [], []
+    for n in range(30):
+        st, en, dv = _mqtt_device(f"d{n}", f"Sensor {n}", f"zigbee2mqtt_0x{n:016x}")
+        st.update(state="unavailable", last_changed=iso(n / 10))
+        states.append(st), ents.append(en), devs.append(dv)
+    r = checks.check_silent_devices(states, ents, devs, NOW, memory={})
+    listed = r["evidence"]["unavailable_under_threshold"]
+    assert r["evidence"]["watching_since_restart"] == 30 and len(listed) == 25
+    assert listed[0]["name"] == "Sensor 29"  # longest-unavailable first

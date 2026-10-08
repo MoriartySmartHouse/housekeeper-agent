@@ -166,6 +166,26 @@ def _last_seen(sts):
     return None
 
 
+Z2M_DEVICE_PREFIX = "zigbee2mqtt_0x"  # z2m end device: ("mqtt", "zigbee2mqtt_0x<ieee>")
+Z2M_BRIDGE_PREFIX = "zigbee2mqtt_bridge_"  # the bridge itself: ("mqtt", "zigbee2mqtt_bridge_0x<ieee>")
+
+
+def _mqtt_ids(device):
+    """The device's MQTT identifiers. The registry serialises identifiers as [[domain, id], ...]."""
+    return [str(i[1]) for i in device.get("identifiers") or []
+            if isinstance(i, (list, tuple)) and len(i) == 2 and i[0] == "mqtt"]
+
+
+def _z2m_devices(device_registry):
+    """Ids of Zigbee2MQTT end devices — not the bridge, z2m groups or other MQTT-discovery devices
+    (e.g. BirdNET-Go). Identifier prefix first; a device routed via the z2m bridge counts too."""
+    bridges = {d.get("id") for d in device_registry
+               if any(i.startswith(Z2M_BRIDGE_PREFIX) for i in _mqtt_ids(d))}
+    return {d.get("id") for d in device_registry
+            if any(i.startswith(Z2M_DEVICE_PREFIX) for i in _mqtt_ids(d))
+            or (d.get("via_device_id") and d.get("via_device_id") in bridges)}
+
+
 def check_silent_devices(states, entity_registry, device_registry, now, silent_h=24, exceptions=(),
                          stale_h=48, memory=None):
     """Devices (z2m + ESPHome) that have stopped reporting.
@@ -182,18 +202,18 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
     memory = {} if memory is None else memory
     by_id = {s["entity_id"]: s for s in states if "entity_id" in s}
     names = {d.get("id"): d.get("name_by_user") or d.get("name") for d in device_registry}
-    devices, platform = {}, {}
+    z2m = _z2m_devices(device_registry)
+    devices = {}
     for e in entity_registry:
         if e.get("platform") not in SILENT_PLATFORMS or not e.get("device_id") or e.get("disabled_by"):
             continue
         st = by_id.get(e.get("entity_id"))
         if st is not None:
             devices.setdefault(e["device_id"], []).append(st)
-            platform[e["device_id"]] = e.get("platform")
-    silent, stale, no_last_seen = [], [], []
+    silent, stale, watching, no_last_seen = [], [], [], []
     for dev_id, sts in devices.items():
         name = names.get(dev_id) or dev_id
-        if platform[dev_id] == "mqtt" and not any(s["entity_id"].endswith("_last_seen") for s in sts):
+        if dev_id in z2m and not any(s["entity_id"].endswith("_last_seen") for s in sts):
             no_last_seen.append(name)
         if name in exceptions:
             memory.pop(dev_id, None)
@@ -205,6 +225,8 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
             memory.setdefault(dev_id, since.isoformat())
             if now - since > timedelta(hours=silent_h):
                 silent.append((name, hours(now - since)))
+            else:
+                watching.append((name, since, hours(now - since)))
             continue
         memory.pop(dev_id, None)
         if seen and now - seen > timedelta(hours=silent_h):
@@ -219,10 +241,12 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
         memory.pop(dev_id)
     silent.sort(key=lambda x: -x[1])
     stale.sort(key=lambda x: -x[1])
+    watching.sort(key=lambda x: -x[2])
     ev = {"devices_checked": len(devices),
           "silent": [{"name": n, "silent_h": h} for n, h in silent],
           "not_heard": [{"name": n, "h": h} for n, h in stale],
           "watching_since_restart": len(memory),
+          "unavailable_under_threshold": [{"name": n, "since": t.isoformat(), "h": h} for n, t, h in watching[:25]],
           "zigbee_without_last_seen": sorted(no_last_seen)[:60]}
     if not devices:
         return unknown(cid, "no z2m/ESPHome devices found — registry format changed?")
