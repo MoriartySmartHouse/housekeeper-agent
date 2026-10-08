@@ -16,6 +16,21 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
   history, or your passwords.
 - To stop it at any time: stop or uninstall this App.
 
+## Security
+- **Prebuilt image.** Home Assistant downloads a ready-made image for this App
+  (`ghcr.io/moriartysmarthouse/housekeeper-agent`) instead of building it on your machine. It is built
+  from this repository's public code by GitHub Actions, only when a version is tagged; the build log
+  is public on the repository's *Actions* tab.
+- **AppArmor profile.** The App ships its own AppArmor profile (`apparmor.txt`): it can run Python, read
+  its own code, read and write its own `/data` folder, and make outbound network connections. It cannot
+  start a shell or other programs, write anywhere else, or use any special Linux privileges.
+- **Security rating.** Home Assistant shows **8** (the highest; 6 on Home Assistant systems older than
+  September 2026) once the App is installed or updated: it opens no ports, uses neither host networking
+  nor elevated Supervisor roles, and has its own AppArmor profile. The rating does **not** measure the
+  Home Assistant API access described above, which is the access that matters most here.
+- **Not signed.** Images are not signed: Home Assistant does not currently check image signatures, so
+  a signature would not protect you. Trust comes from the public code and public build.
+
 ## Settings
 | Setting | Meaning |
 |---|---|
@@ -24,11 +39,11 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
 | `site_key` | The secret key for this home, given to you |
 | `central_url` | Address of the Housekeeper service |
 | `healthchecks_url` | Optional independent check-in URL |
+| `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
+| `watch` | Older JSON format of the same, still accepted |
 
 `central_url` must be `https://`; plain `http://` is accepted only for a private or Tailscale address.
 The App refuses to start (and says why in its log) if a required setting is blank or invalid.
-| `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
-| `watch` | Older JSON format of the same, still accepted |
 
 ## Good to know
 - A Zigbee device is flagged as silent after it has been unavailable for 24 h. Zigbee2MQTT itself waits

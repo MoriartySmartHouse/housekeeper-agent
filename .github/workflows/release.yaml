@@ -1,0 +1,139 @@
+# Builds the App image for every architecture in config.yaml and publishes it to GHCR when a
+# version tag (v<version>) is pushed. Houses then pull the prebuilt image named by `image:` in
+# config.yaml instead of building the Dockerfile themselves.
+#
+# Why tags (not "main changed the version"): the Supervisor reads config.yaml from main. If main
+# announced a version before its image existed, every house would see an update that fails to
+# pull. Pushing the tag first, waiting for this workflow to go green, and only then pushing main
+# guarantees the image exists before any house is offered the update. See DOCS.md / CHANGELOG.
+#
+# Signing: the HA builder actions can sign with Cosign, but the Supervisor does not verify image
+# signatures today (it reports every App as unsigned), so signing is off here: it would add an
+# OIDC token permission and nothing would check the result. Flip `cosign: "true"` on both
+# builder steps and add `id-token: write` to the build and manifest jobs to publish signatures as
+# optional provenance.
+name: Release image
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_DIR: housekeeper_agent
+
+jobs:
+  init:
+    name: Read App metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      architectures: ${{ steps.meta.outputs.architectures }}
+      image_name: ${{ steps.meta.outputs.image_name }}
+      registry_prefix: ${{ steps.meta.outputs.registry_prefix }}
+      name: ${{ steps.meta.outputs.name }}
+      description: ${{ steps.meta.outputs.description }}
+      url: ${{ steps.meta.outputs.url }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read config.yaml and check it matches the tag
+        id: meta
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cfg="${APP_DIR}/config.yaml"
+          version="$(yq -r '.version' "$cfg")"
+          image="$(yq -r '.image' "$cfg")"
+          if [[ "$TAG" != "v${version}" ]]; then
+            echo "::error file=${cfg}::Tag ${TAG} does not match config.yaml version ${version} (expected v${version})"
+            exit 1
+          fi
+          if [[ -z "$image" || "$image" == "null" || "$image" == *"{arch}"* || "$image" != "${image,,}" ]]; then
+            echo "::error file=${cfg}::config.yaml image must be a lowercase generic name (ghcr.io/<owner>/<name>), got '${image}'"
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "architectures=$(yq -o=json -I=0 '.arch' "$cfg")"
+            echo "image_name=${image##*/}"
+            echo "registry_prefix=${image%/*}"
+            echo "name=$(yq -r '.name' "$cfg")"
+            echo "description=$(yq -r '.description' "$cfg")"
+            echo "url=$(yq -r '.url' "$cfg")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          architectures: ${{ steps.meta.outputs.architectures }}
+          image-name: ${{ steps.meta.outputs.image_name }}
+          registry-prefix: ${{ steps.meta.outputs.registry_prefix }}
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: init
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read  # check out the code
+      packages: write  # push the per-arch image to GHCR
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.init.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and push image
+        uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          context: ./${{ env.APP_DIR }}
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.init.outputs.version }}
+            latest
+          labels: |
+            io.hass.type=app
+            io.hass.name=${{ needs.init.outputs.name }}
+            io.hass.description=${{ needs.init.outputs.description }}
+            io.hass.url=${{ needs.init.outputs.url }}
+          version: ${{ needs.init.outputs.version }}
+          push: "true"
+          # Never overwrite a published version: a re-run of an already-published tag builds but does not push.
+          skip-existing: ${{ needs.init.outputs.version }}
+          cosign: "false"
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [init, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write  # push the multi-arch manifest to GHCR
+    steps:
+      - name: Publish multi-arch manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          architectures: ${{ needs.init.outputs.architectures }}
+          image-name: ${{ needs.init.outputs.image_name }}
+          registry-prefix: ${{ needs.init.outputs.registry_prefix }}
+          image-tags: |
+            ${{ needs.init.outputs.version }}
+            latest
+          skip-existing: ${{ needs.init.outputs.version }}
+          cosign: "false"
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}

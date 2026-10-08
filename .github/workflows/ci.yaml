@@ -8,8 +8,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - run: pip install pytest ruff "websockets>=13,<16"
@@ -19,7 +21,35 @@ jobs:
     # Validates config.yaml against what the Supervisor accepts.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: frenck/action-addon-linter@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: frenck/action-app-linter@b9cfd1bc62ba60d2c4fc96317b5f7ada5923f4a7 # v2.21.1
         with:
           path: "./housekeeper_agent"
+  image-build:
+    # Builds (never pushes) the image on each architecture, so a broken Dockerfile shows up before a
+    # release tag. Publishing is done only by release.yaml.
+    name: Image build (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, os: ubuntu-24.04}
+          - {arch: aarch64, os: ubuntu-24.04-arm}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          context: ./housekeeper_agent
+          image: local/${{ matrix.arch }}-housekeeper-agent
+          image-tags: ci
+          version: ci
+          push: "false"
+          cosign: "false"
+          cache-gha: "false"
+          container-registry-password: unused-no-push
