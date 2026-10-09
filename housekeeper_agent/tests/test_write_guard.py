@@ -31,10 +31,11 @@ def test_only_allowed_http_writes():
 
 def test_no_service_calls_or_mutating_ws_commands():
     banned = [r"call_service", r"/api/services", r"/services/", r'"execute_script"', r"fire_event",
-              r"/api/config", r"config_entries/", r"/addons/", r"/apps/", r"/core/restart", r"/host/(?!info\b)",
+              r"/api/config", r"config_entries/(?!get\b)",
+              r"/addons/",r"/apps/", r"/core/restart", r"/host/(?!info\b)",
               r"/backups/new", r"/store", r'call\(\s*"(?!(get_states|config/entity_registry/list|'
               r'config/device_registry/list|backup/info|repairs/list_issues|persistent_notification/get|'
-              r'history/history_during_period|get_config)")']
+              r'history/history_during_period|get_config|config_entries/get|system_log/list)")']
     for name, src in SRC.items():
         for pat in banned:
             assert not re.search(pat, src), f"{name}: forbidden pattern {pat!r}"
@@ -44,4 +45,4 @@ def test_websocket_commands_are_the_contract_list():
     cmds = set(re.findall(r'core\.call\("([^"]+)"', SRC["agent.py"]))
     assert cmds == {"get_states", "config/entity_registry/list", "config/device_registry/list",
                     "backup/info", "repairs/list_issues", "persistent_notification/get",
-                    "history/history_during_period", "get_config"}
+                    "history/history_during_period", "get_config", "config_entries/get", "system_log/list"}

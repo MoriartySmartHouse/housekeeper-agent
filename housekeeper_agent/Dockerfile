@@ -1,6 +1,7 @@
 # Built by .github/workflows/release.yaml (one image per architecture, published to GHCR) and pulled by
 # each house via `image:` in config.yaml. Base pinned by digest; Dependabot bumps tag and digest together.
-FROM python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+# Official Docker image via its AWS mirror: Docker Hub rate-limits GitHub runners (429 on 2026-10-09). Same digest.
+FROM public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
 RUN pip install --no-cache-dir "websockets>=13,<16"
 WORKDIR /app
 COPY app/ /app/

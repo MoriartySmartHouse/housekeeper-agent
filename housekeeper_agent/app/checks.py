@@ -552,6 +552,84 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
     return result(cid, WARN, f"{len(flagged)} switched on but drawing nothing: {listed}", evidence=ev)
 
 
+# ---------------------------------------------------------------- integrations / log
+
+FAILED_STATES = ("setup_error", "setup_retry", "migration_error", "failed_unload")
+
+
+def check_integrations(entries, memory=None, exceptions=()):
+    """Integrations HA could not load (setup_error) or keeps retrying (setup_retry) — e.g. 2026-10-09: the desktop
+    plug's integration had been 'failed' for 57 days and only Steve noticed. An entry counts after two hourly runs in a
+    row (memory: {entry_id: iso first seen}), so a device rebooting at report time is not news. Ignored and disabled
+    entries are skipped. Leaves the house: integration name (domain) and its title, e.g. "wled: Entertainment Stand"."""
+    cid = "ha.integrations"
+    if not isinstance(entries, list):
+        return unknown(cid, "config_entries/get returned no list")
+    memory = {} if memory is None else memory
+    bad, now_failing = [], set()
+    active = [e for e in entries if isinstance(e, dict) and e.get("source") != "ignore" and not e.get("disabled_by")]
+    for e in active:
+        label = f"{e.get('domain', '?')}: {e.get('title') or '?'}"
+        if label in exceptions or e.get("domain") in exceptions or e.get("title") in exceptions:
+            continue
+        if e.get("state") in FAILED_STATES:
+            eid = e.get("entry_id") or label
+            now_failing.add(eid)
+            if eid in memory:
+                bad.append((label, e.get("state"), memory[eid]))
+            else:
+                memory[eid] = "seen"
+    for eid in [k for k in memory if k not in now_failing]:
+        memory.pop(eid)
+    ev = {"integrations": len(active), "failing": [{"name": n, "state": s} for n, s, _ in bad]}
+    if not bad:
+        return result(cid, PASS, f"all {len(active)} integrations loaded", evidence=ev)
+    listed = ", ".join(f"{n} ({s.replace('_', ' ')})" for n, s, _ in sorted(bad)[:6])
+    return result(cid, WARN, f"{len(bad)} integration(s) not working: {listed}", evidence=ev)
+
+
+def _log_integration(name):
+    """Logger name -> integration: homeassistant.components.<x>[...] / custom_components.<x>[...]; else the logger."""
+    parts = (name or "?").split(".")
+    for i, p in enumerate(parts[:-1]):
+        if p in ("components", "custom_components"):
+            return parts[i + 1]
+    return parts[0] if parts[0] != "homeassistant" else ".".join(parts[:2])
+
+
+def check_log_errors(entries, now, threshold=10, window_h=24):
+    """Errors in HA's log over the last day, by integration — 2026-10-07 the log held ~1,500 errors nobody had seen,
+    and the dead Driveway Alert surfaced only there. Reads system_log/list (HA's own deduplicated error list).
+    Leaves the house: integration names and counts only, never the log text."""
+    cid = "ha.log_errors"
+    if not isinstance(entries, list):
+        return unknown(cid, "system_log/list returned no list")
+    since = now - timedelta(hours=window_h)
+    per = {}
+    for e in entries:
+        if not isinstance(e, dict) or e.get("level") not in ("ERROR", "CRITICAL"):
+            continue
+        try:
+            last = parse_ts(e.get("timestamp"))
+        except (ValueError, TypeError, OverflowError):
+            last = None
+        if last is None or last < since:
+            continue
+        name = _log_integration(e.get("name"))
+        per[name] = per.get(name, 0) + int(e.get("count") or 1)
+    ranked = sorted(per.items(), key=lambda x: -x[1])
+    total = sum(per.values())
+    ev = {"errors_24h": total, "by_integration": dict(ranked[:15])}
+    noisy = [(n, c) for n, c in ranked if c >= threshold]
+    if noisy:
+        listed = ", ".join(f"{n} {c}x" for n, c in noisy[:6])
+        return result(cid, WARN, f"{total} errors in HA's log in {window_h} h: {listed}", evidence=ev)
+    if total:
+        return result(cid, PASS, f"{total} error(s) in HA's log in {window_h} h, none repeating {threshold}+ times",
+                      evidence=ev)
+    return result(cid, PASS, f"no errors in HA's log in {window_h} h", evidence=ev)
+
+
 # ---------------------------------------------------------------- platform / site-specific
 
 def check_supervisor(resolution):

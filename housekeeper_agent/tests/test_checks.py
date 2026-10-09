@@ -404,3 +404,38 @@ def test_zero_power_waits_hours_then_flags():
     assert "switch.gym_fan" not in mem
     assert checks.check_zero_power(S, R, t0 + timedelta(hours=30), {}, exceptions=["Gym Fan"])["status"] == "PASS"
     assert checks.check_zero_power(None, R, t0)["status"] == "UNKNOWN"
+
+
+def test_integrations_failing_twice_in_a_row():
+    entries = [{"entry_id": "a", "domain": "wled", "title": "Entertainment Stand", "state": "setup_retry"},
+               {"entry_id": "b", "domain": "tplink", "title": "Computer Plug", "state": "setup_error"},
+               {"entry_id": "c", "domain": "wiz", "title": "Kitchen1", "state": "loaded"},
+               {"entry_id": "d", "domain": "sonos", "title": "sonos", "state": "not_loaded", "source": "ignore"},
+               {"entry_id": "e", "domain": "matter", "title": "Matter", "state": "setup_error", "disabled_by": "user"}]
+    mem = {}
+    r = checks.check_integrations(entries, mem)
+    assert r["status"] == "PASS" and set(mem) == {"a", "b"}            # first sighting: wait an hour
+    r = checks.check_integrations(entries, mem)
+    assert r["status"] == "WARN" and r["reason"].startswith("2 integration(s) not working: tplink: Computer Plug")
+    assert "wled: Entertainment Stand (setup retry)" in r["reason"] and r["evidence"]["integrations"] == 3
+    entries[0]["state"] = "loaded"
+    r = checks.check_integrations(entries, mem, exceptions=["tplink"])
+    assert r["status"] == "PASS" and mem == {}
+    assert checks.check_integrations(None)["status"] == "UNKNOWN"
+
+
+def test_log_errors_by_integration_counts_only():
+    now = datetime(2026, 10, 9, 20, tzinfo=UTC)
+    recent, old = (now - timedelta(hours=2)).timestamp(), (now - timedelta(days=3)).timestamp()
+    log = [{"name": "homeassistant.components.wiz.light", "level": "ERROR", "timestamp": recent, "count": 40,
+            "message": ["Kitchen3 unreachable 192.168.0.81"]},
+           {"name": "custom_components.tapo_control", "level": "ERROR", "timestamp": recent, "count": 3},
+           {"name": "homeassistant.components.mqtt", "level": "WARNING", "timestamp": recent, "count": 99},
+           {"name": "homeassistant.components.kasa", "level": "ERROR", "timestamp": old, "count": 500},
+           {"name": "homeassistant.core", "level": "ERROR", "timestamp": recent, "count": 1}]
+    r = checks.check_log_errors(log, now)
+    assert r["status"] == "WARN" and r["reason"] == "44 errors in HA's log in 24 h: wiz 40x"
+    assert r["evidence"]["by_integration"] == {"wiz": 40, "tapo_control": 3, "homeassistant.core": 1}
+    assert "192.168" not in json.dumps(r)                               # never the log text
+    assert checks.check_log_errors([], now)["status"] == "PASS"
+    assert checks.check_log_errors(None, now)["status"] == "UNKNOWN"
