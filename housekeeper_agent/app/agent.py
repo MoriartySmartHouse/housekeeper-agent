@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -189,6 +189,8 @@ def gather(token):
     data = {"errors": errors}
     sup = fetch("supervisor/resolution", lambda: http("GET", f"{SUPERVISOR}/resolution/info", token), errors)
     data["resolution"] = sup.get("data") if isinstance(sup, dict) else None
+    host = fetch("supervisor/host", lambda: http("GET", f"{SUPERVISOR}/host/info", token), errors)
+    data["host"] = host.get("data") if isinstance(host, dict) else None
     core = connect_core(token, errors)
     if core is None:
         return data, None
@@ -236,6 +238,9 @@ def run_checks(data, opts, now, memory=None):
         safe("devices.flapping", checks.check_flapping, data.get("history_24h"), data.get("flap_candidates") or {}),
         safe("automations.stopped", checks.check_automations, s, now, memory.setdefault("triggers", {}),
              exceptions=opts.get("automation_exceptions", [])),
+        safe("system.disk", checks.check_disk, data.get("host")),
+        safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
+             hours_needed=opts.get("zero_power_hours", 6), exceptions=opts.get("zero_power_exceptions", [])),
     ]
     for rule in opts.get("watch", []):
         if "invalid" in rule:

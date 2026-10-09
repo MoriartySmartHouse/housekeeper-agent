@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+- New check: **disk space** on your Home Assistant — a warning well before it runs out (Home Assistant's own warning
+  only appears at about 2 GB left). The Housekeeper service also forecasts when it would be full.
+- New check: **switched on but drawing nothing** — a smart plug or switch with its own power meter that has been on
+  at 0 W for hours (e.g. the appliance was unplugged). Kasa plugs are slow to show watts, so it waits 6 hours by
+  default (*Hours on at 0 W before reporting*); exclude plugs that are normally idle with the new setting.
+
 ## 0.1.5
 - For **safer updates**: the update check now sends the installed and offered version of each waiting update, and
   the list of integrations your Home Assistant has loaded (their short names only, e.g. `mqtt`, `zha`). The
