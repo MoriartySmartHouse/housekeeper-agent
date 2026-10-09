@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -199,6 +199,7 @@ def gather(token):
         data["backup_info"] = fetch("backup/info", lambda: core.call("backup/info"), errors)
         data["repairs"] = fetch("repairs", lambda: (core.call("repairs/list_issues") or {}).get("issues"), errors)
         data["notifications"] = fetch("notifications", lambda: core.call("persistent_notification/get"), errors)
+        data["config"] = fetch("get_config", lambda: core.call("get_config"), errors)
         data["flap_candidates"] = checks.flap_candidates(data["entity_registry"], data["device_registry"])
         if data["flap_candidates"]:
             start = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
@@ -227,7 +228,7 @@ def run_checks(data, opts, now, memory=None):
         safe("backup.last_attempt", checks.check_backup_last_attempt, data.get("backup_info"), now),
         safe("ha.repairs", checks.check_repairs, data.get("repairs")),
         safe("ha.notifications", checks.check_notifications, data.get("notifications")),
-        safe("ha.updates", checks.check_updates, s),
+        safe("ha.updates", checks.check_updates, s, checks.integration_domains(data.get("config"))),
         safe("devices.silent", checks.check_silent_devices, s, ents, data.get("device_registry"), now,
              silent_h=opts.get("silent_hours", 24), exceptions=opts.get("silent_exceptions", []),
              memory=memory.setdefault("silent_since", {})),

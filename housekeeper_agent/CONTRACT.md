@@ -18,3 +18,6 @@ Review each HA release's "Backward-incompatible changes" against this list.
 | 11 | Conventions | z2m `sensor.*_last_seen` state = ISO timestamp of last message (when enabled) | | silent |
 | 12 | Behaviour | HA resets `last_changed` of unavailable entities on restart → agent keeps `/data/memory.json` | | silent |
 | 13 | Conventions | z2m end device identifier `["mqtt", "zigbee2mqtt_0x<ieee>"]`; bridge `zigbee2mqtt_bridge_0x<ieee>`; z2m devices have `via_device_id` = bridge | | silent (`zigbee_without_last_seen`) |
+| 14 | Core WS | `history/history_during_period` (24 h, `minimal_response`, `no_attributes`) | `{entity_id: [{"s": state}]}` | devices.flapping |
+| 15 | Core WS | `get_config` | `components` (list of `"domain"` / `"platform.domain"` strings) | ha.updates (`integrations`) |
+| 16 | Conventions | `update.*` attributes `installed_version`, `latest_version` | | ha.updates (`versions`) |

@@ -132,13 +132,29 @@ def check_notifications(notifications):
     return result(cid, PASS, "no persistent notifications", evidence=ev)
 
 
-def check_updates(states):
+def integration_domains(config):
+    """Integration domains loaded in this HA, from get_config `components`. Entries look like "mqtt" or a platform
+    pair such as "sensor.mqtt"; both halves are integrations a breaking change can be labelled with. None = unread."""
+    comps = config.get("components") if isinstance(config, dict) else None
+    if not isinstance(comps, list):
+        return None
+    return sorted({part for c in comps if isinstance(c, str) for part in c.split(".") if part})
+
+
+def check_updates(states, integrations=None):
+    """Waiting updates, with versions (central matches them against each release's breaking changes) and the
+    integrations this house loads (domains only), so central can say which breaking changes touch this house."""
     cid = "ha.updates"
     if not isinstance(states, list):
         return unknown(cid, "get_states returned no list")
-    pending = [s["entity_id"] for s in states
-               if s.get("entity_id", "").startswith("update.") and s.get("state") == "on"]
-    ev = {"count": len(pending), "pending": pending[:30]}
+    waiting = [s for s in states if s.get("entity_id", "").startswith("update.") and s.get("state") == "on"]
+    pending = [s["entity_id"] for s in waiting]
+    versions = {s["entity_id"]: {"installed": str(s.get("attributes", {}).get("installed_version") or "")[:40],
+                                 "latest": str(s.get("attributes", {}).get("latest_version") or "")[:40]}
+                for s in waiting[:30]}
+    ev = {"count": len(pending), "pending": pending[:30], "versions": versions}
+    if integrations is not None:
+        ev["integrations"] = integrations[:400]
     # Waiting updates are information for the operator, not a fault: PASS with detail.
     return result(cid, PASS, f"{len(pending)} updates waiting" if pending else "up to date", evidence=ev)
 

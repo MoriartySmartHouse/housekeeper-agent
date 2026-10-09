@@ -283,3 +283,22 @@ def test_battery_levels_reported_for_trends():
     reg = [{"entity_id": "sensor.phone_battery", "platform": "mobile_app"}]
     r = checks.check_batteries(states, reg)
     assert r["status"] == "PASS" and r["evidence"]["levels"] == {"Lock battery": 62}
+
+
+def test_integration_domains_splits_platform_pairs():
+    cfg = {"components": ["mqtt", "sensor.mqtt", "zha", "light", "light.wled", "", 5]}
+    assert checks.integration_domains(cfg) == ["light", "mqtt", "sensor", "wled", "zha"]
+    assert checks.integration_domains({}) is None
+    assert checks.integration_domains(None) is None
+
+
+def test_updates_carry_versions_and_integrations():
+    states = [{"entity_id": "update.home_assistant_core_update", "state": "on",
+               "attributes": {"installed_version": "2026.10.0", "latest_version": "2026.10.1"}},
+              {"entity_id": "update.frigate", "state": "off", "attributes": {}}]
+    r = checks.check_updates(states, ["mqtt", "zha"])
+    assert r["status"] == "PASS"
+    assert r["evidence"]["versions"] == {"update.home_assistant_core_update":
+                                         {"installed": "2026.10.0", "latest": "2026.10.1"}}
+    assert r["evidence"]["integrations"] == ["mqtt", "zha"]
+    assert "integrations" not in checks.check_updates(states)["evidence"]   # unread config: just left out

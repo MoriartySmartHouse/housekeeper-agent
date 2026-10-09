@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+- For **safer updates**: the update check now sends the installed and offered version of each waiting update, and
+  the list of integrations your Home Assistant has loaded (their short names only, e.g. `mqtt`, `zha`). The
+  Housekeeper service matches these against each Home Assistant release's breaking changes, so you hear *before*
+  updating which changes touch your home. Read with one more read-only call (`get_config`).
+
 ## 0.1.4
 - New check: **devices that keep dropping off** — a plug, light or switch that went unavailable 3 or more
   times in 24 hours (e.g. weak WiFi). To see the short drop-offs it reads the last 24 h of on/off history of
