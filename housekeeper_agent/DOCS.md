@@ -11,11 +11,14 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
   writing its own status sensor; an automatic test fails the build if any other write is ever added. The
   code is public in the repository above.
 - **What leaves your home:** check results only — e.g. "backup 8 h old", "Front door lock battery 18 %".
-  That includes device names, the names and versions of waiting updates (which show what apps you have installed), the short names of the integrations your Home Assistant has loaded (e.g. `mqtt` — used to warn you about breaking changes before you update), repair
-  ids, the level of each battery, the names of plugs/lights that keep dropping off the network, the names of automations that stopped running (with
-  how long and how often they usually run — the trigger times themselves stay in your home), and the count —
-  not the text — of your notifications. **Never** camera images, locations, history, or your passwords. (To spot
-  drop-offs the App reads the last 24 h of on/off history of plugs, lights and switches; that stays in your home.)
+  That includes device names; the names and versions of waiting updates (which show what apps you have
+  installed); the short names of the integrations your Home Assistant has loaded (e.g. `mqtt` — used to warn
+  you about breaking changes before you update); repair ids; the level of each battery; the names of plugs and
+  lights that keep dropping off the network; the names of automations that stopped running, with how long and
+  how often they usually run; and the count — not the text — of your notifications. **Never** camera images,
+  locations, history, or your passwords. (To spot drop-offs the App reads the last 24 h of on/off history of
+  plugs, lights and switches; to spot stopped automations it remembers their recent run times. Both stay in your
+  home.)
 - To stop it at any time: stop or uninstall this App.
 
 ## Security
@@ -41,6 +44,8 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
 | `site_key` | The secret key for this home, given to you |
 | `central_url` | Address of the Housekeeper service |
 | `healthchecks_url` | Optional independent check-in URL |
+| `silent_exceptions` | Optional: device names never to report as silent (e.g. something unplugged on purpose) |
+| `automation_exceptions` | Optional: automation names never to report as "stopped running" (e.g. a seasonal one) |
 | `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
 | `watch` | Older JSON format of the same, still accepted |
 
