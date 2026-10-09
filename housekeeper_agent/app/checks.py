@@ -462,6 +462,96 @@ def _gap_text(h):
     return f"{h:.0f} h" if h < 48 else f"{h / 24:.0f} d"
 
 
+# ---------------------------------------------------------------- disk / power
+
+def check_disk(host, warn_free_gb=5.0, fail_free_gb=1.5, warn_pct=85):
+    """HA's data disk, from Supervisor /host/info. HA's own repair only appears at ~2 GB free (2026-10-09:
+    images of stopped Apps + the ESPHome build cache had filled it). free_gb in evidence lets central forecast
+    "full in N days"."""
+    cid = "system.disk"
+    if not isinstance(host, dict) or not isinstance(host.get("disk_total"), (int, float)) \
+            or not isinstance(host.get("disk_free"), (int, float)) or not host["disk_total"]:
+        return unknown(cid, "/host/info has no disk_total / disk_free")
+    total, free = float(host["disk_total"]), float(host["disk_free"])
+    used_pct = round(100 * (total - free) / total, 1)
+    ev = {"free_gb": round(free, 2), "total_gb": round(total, 1), "used_pct": used_pct}
+    reason = f"data disk {free:.1f} GB free of {total:.0f} GB ({used_pct:.0f} % used)"
+    if free < fail_free_gb:
+        return result(cid, FAIL, reason, "Home Assistant has almost no disk space left; backups and updates may fail.",
+                      "household", ev)
+    if free < warn_free_gb or used_pct >= warn_pct:
+        return result(cid, WARN, reason, evidence=ev)
+    return result(cid, PASS, reason, evidence=ev)
+
+
+def _power_sensors(states, entity_registry):
+    """{device_id: (entity_id, watts, last_changed)} — the device's power sensor (W), if it has one."""
+    by_id = {s.get("entity_id"): s for s in states}
+    out = {}
+    for e in entity_registry:
+        st = by_id.get(e.get("entity_id"))
+        if not st or not e.get("device_id") or e.get("disabled_by") or not e["entity_id"].startswith("sensor."):
+            continue
+        a = st.get("attributes") or {}
+        if a.get("device_class") != "power" or a.get("unit_of_measurement") != "W":
+            continue
+        try:
+            watts = float(st.get("state"))
+        except (TypeError, ValueError):
+            continue
+        out.setdefault(e["device_id"], (e["entity_id"], watts, parse_ts(st.get("last_changed"))))
+    return out
+
+
+def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, max_w=0.5, exceptions=()):
+    """A switch that is ON while its own power meter has read ~0 W for hours: the HVAC-03 class (the gym fan was
+    commanded on ~80 min/day for 41 days while unplugged). Kasa meters take a while to register watts, so a plug only
+    counts after `hours_needed` of on-and-zero, tracked across runs in `memory` ({switch: iso since}). Evidence names
+    the switch and hours only."""
+    cid = "devices.zero_power"
+    if not isinstance(states, list) or not isinstance(entity_registry, list):
+        return unknown(cid, "states / entity registry not readable")
+    memory = {} if memory is None else memory
+    meters = _power_sensors(states, entity_registry)
+    by_id = {s.get("entity_id"): s for s in states}
+    watched, flagged, seen = 0, [], set()
+    for e in entity_registry:
+        eid, dev = e.get("entity_id", ""), e.get("device_id")
+        if not eid.startswith("switch.") or dev not in meters or e.get("disabled_by") or e.get("entity_category"):
+            continue
+        st = by_id.get(eid)
+        if not st:
+            continue
+        name = (st.get("attributes") or {}).get("friendly_name") or eid
+        if name in exceptions or eid in exceptions:
+            continue
+        watched += 1
+        seen.add(eid)
+        _, watts, zero_since = meters[dev]
+        if st.get("state") != "on" or watts > max_w:
+            memory.pop(eid, None)
+            continue
+        try:
+            since = parse_ts(memory.get(eid)) if isinstance(memory.get(eid), str) else None
+        except ValueError:
+            since = None
+        if since is None:   # first sighting: on-and-zero began when the later of the two did
+            starts = [t for t in (parse_ts(st.get("last_changed")), zero_since) if t]
+            since = max(starts) if starts else now
+        memory[eid] = since.isoformat()
+        hrs = hours(now - since)
+        if hrs >= hours_needed:
+            flagged.append((name, hrs))
+    for eid in [k for k in memory if k not in seen]:
+        memory.pop(eid)
+    flagged.sort(key=lambda x: -x[1])
+    ev = {"switches_with_meter": watched, "zero_power": [{"name": n, "hours": h} for n, h in flagged]}
+    if not flagged:
+        return result(cid, PASS, f"{watched} metered switches, none on at 0 W for {hours_needed}+ h", evidence=ev)
+    listed = ", ".join(f"{n} ({_gap_text(h)})" for n, h in flagged[:5])
+    return result(cid, WARN, f"{len(flagged)} switched on but drawing nothing: {listed}", evidence=ev)
+
+
 # ---------------------------------------------------------------- platform / site-specific
 
 def check_supervisor(resolution):

@@ -360,3 +360,47 @@ def test_review_core_update_kept_when_many_waiting():
     states.append({"entity_id": "update.home_assistant_core_update", "state": "on",
                    "attributes": {"installed_version": "2026.10.0", "latest_version": "2026.10.1"}})
     assert "update.home_assistant_core_update" in checks.check_updates(states)["evidence"]["versions"]
+
+
+def test_disk_thresholds_and_unknown():
+    assert checks.check_disk({"disk_total": 30.8, "disk_free": 14.1})["status"] == "PASS"
+    r = checks.check_disk({"disk_total": 30.8, "disk_free": 2.0})        # the 2026-10-09 state
+    assert r["status"] == "WARN" and r["evidence"]["free_gb"] == 2.0 and "2.0 GB free" in r["reason"]
+    r = checks.check_disk({"disk_total": 30.8, "disk_free": 1.0})
+    assert r["status"] == "FAIL" and r["audience"] == "household"
+    assert checks.check_disk({"disk_total": 0, "disk_free": 1})["status"] == "UNKNOWN"
+    assert checks.check_disk(None)["status"] == "UNKNOWN"
+
+
+def _plug(eid, dev, state, watts, on_at, zero_at, name=None):
+    reg = [{"entity_id": eid, "device_id": dev}, {"entity_id": f"sensor.{dev}_power", "device_id": dev}]
+    sts = [{"entity_id": eid, "state": state, "last_changed": on_at.isoformat(),
+            "attributes": {"friendly_name": name or eid}},
+           {"entity_id": f"sensor.{dev}_power", "state": str(watts), "last_changed": zero_at.isoformat(),
+            "attributes": {"device_class": "power", "unit_of_measurement": "W"}}]
+    return reg, sts
+
+
+def test_zero_power_waits_hours_then_flags():
+    t0 = datetime(2026, 10, 9, 8, tzinfo=UTC)
+    reg, sts = _plug("switch.gym_fan", "d1", "on", 0.0, t0, t0, "Gym Fan")
+    reg2, sts2 = _plug("switch.lamp", "d2", "on", 42.5, t0, t0)            # drawing power: fine
+    reg3, sts3 = _plug("switch.off_one", "d3", "off", 0.0, t0, t0)         # off at 0 W: fine
+    reg4 = [{"entity_id": "switch.no_meter", "device_id": "d4"}]           # no meter: not watched
+    sts4 = [{"entity_id": "switch.no_meter", "state": "on", "attributes": {}}]
+    R, S = reg + reg2 + reg3 + reg4, sts + sts2 + sts3 + sts4
+    mem = {}
+    r = checks.check_zero_power(S, R, t0 + timedelta(minutes=20), mem)    # Kasa slow to show watts: no flag
+    assert r["status"] == "PASS" and r["evidence"]["switches_with_meter"] == 3
+    r = checks.check_zero_power(S, R, t0 + timedelta(hours=7), mem)
+    assert r["status"] == "WARN" and "Gym Fan (7 h)" in r["reason"]
+    # HA restart resets last_changed; memory keeps the real start
+    _, sts_r = _plug("switch.gym_fan", "d1", "on", 0.0, t0 + timedelta(hours=8), t0 + timedelta(hours=8), "Gym Fan")
+    r = checks.check_zero_power(sts_r + sts2 + sts3 + sts4, R, t0 + timedelta(hours=9), mem)
+    assert "Gym Fan (9 h)" in r["reason"]
+    # power comes back -> forgotten
+    _, sts_ok = _plug("switch.gym_fan", "d1", "on", 39.0, t0, t0, "Gym Fan")
+    assert checks.check_zero_power(sts_ok + sts2 + sts3 + sts4, R, t0 + timedelta(hours=10), mem)["status"] == "PASS"
+    assert "switch.gym_fan" not in mem
+    assert checks.check_zero_power(S, R, t0 + timedelta(hours=30), {}, exceptions=["Gym Fan"])["status"] == "PASS"
+    assert checks.check_zero_power(None, R, t0)["status"] == "UNKNOWN"

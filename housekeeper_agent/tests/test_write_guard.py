@@ -31,7 +31,7 @@ def test_only_allowed_http_writes():
 
 def test_no_service_calls_or_mutating_ws_commands():
     banned = [r"call_service", r"/api/services", r"/services/", r'"execute_script"', r"fire_event",
-              r"/api/config", r"config_entries/", r"/addons/", r"/apps/", r"/core/restart", r"/host/",
+              r"/api/config", r"config_entries/", r"/addons/", r"/apps/", r"/core/restart", r"/host/(?!info\b)",
               r"/backups/new", r"/store", r'call\(\s*"(?!(get_states|config/entity_registry/list|'
               r'config/device_registry/list|backup/info|repairs/list_issues|persistent_notification/get|'
               r'history/history_during_period|get_config)")']

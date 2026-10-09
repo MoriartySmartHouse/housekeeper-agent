@@ -30,6 +30,14 @@ configuration:
     name: Automations to ignore
     description: >-
       Automation names (or automation.* ids) never to report as "stopped firing" — e.g. a seasonal one.
+  zero_power_hours:
+    name: Hours on at 0 W before reporting
+    description: >-
+      A switch with its own power meter that is on but drawing nothing for this long is reported (e.g. an appliance
+      unplugged from a smart plug). Kasa plugs are slow to show watts, so keep this at a few hours.
+  zero_power_exceptions:
+    name: Switches allowed to sit at 0 W
+    description: Switch names (or switch.* ids) that are normally on with nothing drawing power.
   watch_entities:
     name: Things to watch
     description: >-
