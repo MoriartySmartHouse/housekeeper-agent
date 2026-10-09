@@ -38,6 +38,13 @@ configuration:
   zero_power_exceptions:
     name: Switches allowed to sit at 0 W
     description: Switch names (or switch.* ids) that are normally on with nothing drawing power.
+  integration_exceptions:
+    name: Integrations to ignore
+    description: >-
+      Integrations never to report as not working — the domain (e.g. wled), the title, or "domain: title".
+  log_error_threshold:
+    name: Log errors before reporting
+    description: Report an integration that logged this many errors or more in the last 24 hours.
   watch_entities:
     name: Things to watch
     description: >-

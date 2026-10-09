@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -202,6 +202,8 @@ def gather(token):
         data["repairs"] = fetch("repairs", lambda: (core.call("repairs/list_issues") or {}).get("issues"), errors)
         data["notifications"] = fetch("notifications", lambda: core.call("persistent_notification/get"), errors)
         data["config"] = fetch("get_config", lambda: core.call("get_config"), errors)
+        data["config_entries"] = fetch("config_entries", lambda: core.call("config_entries/get"), errors)
+        data["system_log"] = fetch("system_log", lambda: core.call("system_log/list"), errors)
         data["flap_candidates"] = checks.flap_candidates(data["entity_registry"], data["device_registry"])
         if data["flap_candidates"]:
             start = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
@@ -239,6 +241,10 @@ def run_checks(data, opts, now, memory=None):
         safe("automations.stopped", checks.check_automations, s, now, memory.setdefault("triggers", {}),
              exceptions=opts.get("automation_exceptions", [])),
         safe("system.disk", checks.check_disk, data.get("host")),
+        safe("ha.integrations", checks.check_integrations, data.get("config_entries"),
+             memory.setdefault("failing_integrations", {}), exceptions=opts.get("integration_exceptions", [])),
+        safe("ha.log_errors", checks.check_log_errors, data.get("system_log"), now,
+             threshold=opts.get("log_error_threshold", 10)),
         safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
              hours_needed=opts.get("zero_power_hours", 6), exceptions=opts.get("zero_power_exceptions", [])),
     ]

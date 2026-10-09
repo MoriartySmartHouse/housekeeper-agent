@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7
+- New check: **integrations that aren't working** — anything Home Assistant failed to set up or keeps retrying
+  (e.g. a smart plug that has been off the network for weeks), once it has been failing for two hourly checks.
+- New check: **errors in Home Assistant's log** — an integration that logged 10 or more errors in the last day.
+  Only the integration's name and the number of errors leave your home, never the log text.
+
 ## 0.1.6
 - New check: **disk space** on your Home Assistant — a warning well before it runs out (Home Assistant's own warning
   only appears at about 2 GB left). The Housekeeper service also forecasts when it would be full.

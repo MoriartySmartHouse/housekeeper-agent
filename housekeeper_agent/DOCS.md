@@ -15,7 +15,8 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
   installed); the short names of the integrations your Home Assistant has loaded (e.g. `mqtt` — used to warn
   you about breaking changes before you update); repair ids; the level of each battery; the names of plugs and
   lights that keep dropping off the network; the names of automations that stopped running, with how long and
-  how often they usually run; the names of switches that are on but drawing no power; free disk space; and the count — not the text — of your notifications. **Never** camera images,
+  how often they usually run; the names of switches that are on but drawing no power; free disk space; the
+  names of integrations that are not working; the number of log errors per integration (never the log text); and the count — not the text — of your notifications. **Never** camera images,
   locations, history, or your passwords. (To spot drop-offs the App reads the last 24 h of on/off history of
   plugs, lights and switches; to spot stopped automations it remembers their recent run times. Both stay in your
   home.)
@@ -46,6 +47,7 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
 | `healthchecks_url` | Optional independent check-in URL |
 | `silent_exceptions` | Optional: device names never to report as silent (e.g. something unplugged on purpose) |
 | `zero_power_hours` / `zero_power_exceptions` | When to report a switch that is on at 0 W (default 6 h); switches allowed to sit at 0 W (e.g. a plug whose lamp is off at the lamp) |
+| `integration_exceptions` / `log_error_threshold` | Integrations never to report as not working; errors per integration per day before the log is reported (default 10) |
 | `automation_exceptions` | Optional: automation names never to report as "stopped running" (e.g. a seasonal one) |
 | `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
 | `watch` | Older JSON format of the same, still accepted |
