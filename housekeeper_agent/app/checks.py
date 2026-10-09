@@ -9,6 +9,7 @@ never PASS. A breaking HA change must look like a grey check, not a healthy hous
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 
 PASS, WARN, FAIL, UNKNOWN = "PASS", "WARN", "FAIL", "UNKNOWN"
 
@@ -132,13 +133,31 @@ def check_notifications(notifications):
     return result(cid, PASS, "no persistent notifications", evidence=ev)
 
 
-def check_updates(states):
+def integration_domains(config):
+    """Integration domains loaded in this HA, from get_config `components`. Entries look like "mqtt" or a platform
+    pair such as "sensor.mqtt"; both halves are integrations a breaking change can be labelled with. None = unread."""
+    comps = config.get("components") if isinstance(config, dict) else None
+    if not isinstance(comps, list):
+        return None
+    return sorted({part for c in comps if isinstance(c, str) for part in c.split(".") if part})
+
+
+def check_updates(states, integrations=None):
+    """Waiting updates, with versions (central matches them against each release's breaking changes) and the
+    integrations this house loads (domains only), so central can say which breaking changes touch this house."""
     cid = "ha.updates"
     if not isinstance(states, list):
         return unknown(cid, "get_states returned no list")
-    pending = [s["entity_id"] for s in states
-               if s.get("entity_id", "").startswith("update.") and s.get("state") == "on"]
-    ev = {"count": len(pending), "pending": pending[:30]}
+    waiting = [s for s in states if s.get("entity_id", "").startswith("update.") and s.get("state") == "on"]
+    # HA's own updates first, so a house with 30+ waiting updates still reports the Core version.
+    waiting.sort(key=lambda s: "home_assistant" not in s["entity_id"])
+    pending = [s["entity_id"] for s in waiting]
+    versions = {s["entity_id"]: {"installed": str(s.get("attributes", {}).get("installed_version") or "")[:40],
+                                 "latest": str(s.get("attributes", {}).get("latest_version") or "")[:40]}
+                for s in waiting[:30]}
+    ev = {"count": len(pending), "pending": pending[:30], "versions": versions}
+    if integrations is not None:
+        ev["integrations"] = integrations[:400]
     # Waiting updates are information for the operator, not a fault: PASS with detail.
     return result(cid, PASS, f"{len(pending)} updates waiting" if pending else "up to date", evidence=ev)
 
@@ -347,6 +366,100 @@ def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_p
                   f"{first} needs a new battery soon." if len(low) == 1
                   else f"{len(low)} devices need new batteries soon, starting with {first}.",
                   "household", ev)
+
+
+# ---------------------------------------------------------------- automations
+
+KEEP_TRIGGERS = 30        # trigger times remembered per automation (house-side only)
+MIN_TRIGGERS = 5          # need this many (4 gaps) before judging "stopped"
+
+
+def _median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def check_automations(states, now, memory=None, factor=4, min_silent_h=48, exceptions=()):
+    """Automations that stopped firing (the AUTO-11 class: Driveway Alert dead for 7 weeks, nothing noticed) and
+    automations HA could not load (state `unavailable`).
+
+    "Stopped" is learned per automation, house-side: `memory` ({entity_id: [iso trigger times]}, kept in
+    /data/memory.json) collects each new `last_triggered`; once MIN_TRIGGERS are known, an automation silent for more
+    than `factor` x its median gap (and at least `min_silent_h`) is flagged. Rarely-firing automations (leak alarms)
+    have long gaps, so they never trip it. Trigger times never leave the house — only the conclusion does.
+    Known limit: an automation already dead when the agent is installed never collects MIN_TRIGGERS, so it stays
+    "learning" — without history it can't be told apart from a rarely-firing one (shown in evidence as `learning`)."""
+    cid = "automations.stopped"
+    if not isinstance(states, list):
+        return unknown(cid, "get_states returned no list")
+    memory = {} if memory is None else memory
+    autos = [s for s in states if s.get("entity_id", "").startswith("automation.")]
+    if not autos:
+        return unknown(cid, "no automation entities found")
+    broken, stopped, learning = [], [], 0
+    present = set()
+    for s in autos:
+        eid = s["entity_id"]
+        present.add(eid)
+        attrs = s.get("attributes") or {}
+        name = attrs.get("friendly_name") or eid
+        if attrs.get("restored"):
+            continue   # placeholder while HA is still starting: not loaded *yet*, not broken
+        if name in exceptions or eid in exceptions:
+            memory.pop(eid, None)
+            continue
+        if s.get("state") == "unavailable":
+            broken.append(name)
+            continue
+        if s.get("state") != "on":
+            memory.pop(eid, None)          # disabled on purpose: forget, relearn if re-enabled
+            continue
+        try:
+            last = parse_ts((s.get("attributes") or {}).get("last_triggered"))
+        except ValueError:
+            last = None
+        seen = memory.get(eid)
+        if not isinstance(seen, list) or not all(isinstance(t, str) and _valid_ts(t) for t in seen):
+            seen = []   # a damaged memory entry is relearned, never a check stuck on UNKNOWN
+        memory[eid] = seen
+        if last and (not seen or last.isoformat() > seen[-1]):
+            seen.append(last.isoformat())
+            del seen[:-KEEP_TRIGGERS]
+        if len(seen) < MIN_TRIGGERS:
+            learning += 1
+            continue
+        times = [parse_ts(t) for t in seen]
+        gap_h = _median([(b - a).total_seconds() / 3600 for a, b in pairwise(times)])
+        silent_h = (now - times[-1]).total_seconds() / 3600
+        if silent_h > max(factor * gap_h, min_silent_h):
+            stopped.append((name, silent_h, gap_h))
+    for eid in [e for e in memory if e not in present]:
+        memory.pop(eid)
+    stopped.sort(key=lambda x: -x[1] / max(x[2], 0.01))
+    ev = {"automations": len(autos), "learning": learning, "unavailable": sorted(broken)[:30],
+          "stopped": [{"name": n, "silent_d": round(s / 24, 1), "usual_gap_h": round(g, 1)} for n, s, g in stopped]}
+    bits = []
+    if broken:
+        bits.append(f"{len(broken)} not loaded (unavailable): {', '.join(sorted(broken)[:5])}")
+    if stopped:
+        bits.append(f"{len(stopped)} stopped firing: " + ", ".join(
+            f"{n} (silent {round(s / 24, 1)} d, usually every {_gap_text(g)})" for n, s, g in stopped[:5]))
+    if bits:
+        return result(cid, WARN, "; ".join(bits), evidence=ev)
+    note = f"; still learning {learning}" if learning else ""
+    return result(cid, PASS, f"{len(autos)} automations, none stopped{note}", evidence=ev)
+
+
+def _valid_ts(text):
+    try:
+        return parse_ts(text) is not None
+    except ValueError:
+        return False
+
+
+def _gap_text(h):
+    return f"{h:.0f} h" if h < 48 else f"{h / 24:.0f} d"
 
 
 # ---------------------------------------------------------------- platform / site-specific

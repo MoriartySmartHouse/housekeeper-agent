@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -283,3 +284,79 @@ def test_battery_levels_reported_for_trends():
     reg = [{"entity_id": "sensor.phone_battery", "platform": "mobile_app"}]
     r = checks.check_batteries(states, reg)
     assert r["status"] == "PASS" and r["evidence"]["levels"] == {"Lock battery": 62}
+
+
+def test_integration_domains_splits_platform_pairs():
+    cfg = {"components": ["mqtt", "sensor.mqtt", "zha", "light", "light.wled", "", 5]}
+    assert checks.integration_domains(cfg) == ["light", "mqtt", "sensor", "wled", "zha"]
+    assert checks.integration_domains({}) is None
+    assert checks.integration_domains(None) is None
+
+
+def test_updates_carry_versions_and_integrations():
+    states = [{"entity_id": "update.home_assistant_core_update", "state": "on",
+               "attributes": {"installed_version": "2026.10.0", "latest_version": "2026.10.1"}},
+              {"entity_id": "update.frigate", "state": "off", "attributes": {}}]
+    r = checks.check_updates(states, ["mqtt", "zha"])
+    assert r["status"] == "PASS"
+    assert r["evidence"]["versions"] == {"update.home_assistant_core_update":
+                                         {"installed": "2026.10.0", "latest": "2026.10.1"}}
+    assert r["evidence"]["integrations"] == ["mqtt", "zha"]
+    assert "integrations" not in checks.check_updates(states)["evidence"]   # unread config: just left out
+
+
+def _auto(eid, state="on", last=None, name=None):
+    return {"entity_id": eid, "state": state,
+            "attributes": {"friendly_name": name or eid, "last_triggered": last and last.isoformat()}}
+
+
+def test_automation_stopped_is_learned_then_flagged():
+    t0 = datetime(2026, 9, 1, 8, tzinfo=UTC)
+    mem = {}
+    # Driveway Alert fires daily; the leak alarm fired once months ago; one automation is broken.
+    for day in range(6):
+        now = t0 + timedelta(days=day, hours=1)
+        states = [_auto("automation.driveway", last=t0 + timedelta(days=day), name="Driveway Alert"),
+                  _auto("automation.leak", last=datetime(2026, 3, 1, tzinfo=UTC))]
+        r = checks.check_automations(states, now, mem)
+        assert r["status"] == "PASS"
+    assert len(mem["automation.driveway"]) == 6 and len(mem["automation.leak"]) == 1
+    # 3 days quiet: under 4x a 1-day gap -> fine; 5 days quiet -> stopped
+    last = t0 + timedelta(days=5)
+    states = [_auto("automation.driveway", last=last, name="Driveway Alert"),
+              _auto("automation.leak", last=datetime(2026, 3, 1, tzinfo=UTC))]
+    assert checks.check_automations(states, last + timedelta(days=3), mem)["status"] == "PASS"
+    r = checks.check_automations(states, last + timedelta(days=5), mem)
+    assert r["status"] == "WARN" and "Driveway Alert (silent 5.0 d, usually every 24 h)" in r["reason"]
+    assert "leak" not in r["reason"]                       # one trigger on record: still learning, never flagged
+    assert r["evidence"]["stopped"] == [{"name": "Driveway Alert", "silent_d": 5.0, "usual_gap_h": 24.0}]
+    assert "2026-" not in json.dumps(r["evidence"])        # trigger times never leave the house
+    assert checks.check_automations(states, last + timedelta(days=5), mem,
+                                    exceptions=["Driveway Alert"])["status"] == "PASS"
+
+
+def test_automation_unavailable_and_disabled():
+    mem = {"automation.off": ["2026-09-01T00:00:00+00:00"]}
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    r = checks.check_automations([_auto("automation.bad", state="unavailable", name="Broken one"),
+                                  _auto("automation.off", state="off")], now, mem)
+    assert r["status"] == "WARN" and "1 not loaded (unavailable): Broken one" in r["reason"]
+    assert "automation.off" not in mem                     # disabled on purpose: forgotten
+    assert checks.check_automations([], now, {})["status"] == "UNKNOWN"
+    assert checks.check_automations(None, now, {})["status"] == "UNKNOWN"
+
+
+def test_review_restored_placeholders_and_bad_memory():
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    starting = {"entity_id": "automation.x", "state": "unavailable", "attributes": {"restored": True}}
+    mem = {"automation.y": "garbage", "automation.z": ["not a time"]}
+    r = checks.check_automations([starting, _auto("automation.y", last=now), _auto("automation.z", last=now)], now, mem)
+    assert r["status"] == "PASS"                                  # HA starting up is not "not loaded"
+    assert mem["automation.y"] == [now.isoformat()] and mem["automation.z"] == [now.isoformat()]
+
+
+def test_review_core_update_kept_when_many_waiting():
+    states = [{"entity_id": f"update.addon_{i:02d}", "state": "on", "attributes": {}} for i in range(40)]
+    states.append({"entity_id": "update.home_assistant_core_update", "state": "on",
+                   "attributes": {"installed_version": "2026.10.0", "latest_version": "2026.10.1"}})
+    assert "update.home_assistant_core_update" in checks.check_updates(states)["evidence"]["versions"]
