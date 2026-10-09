@@ -238,3 +238,48 @@ def test_unavailable_under_threshold_list_is_bounded():
     listed = r["evidence"]["unavailable_under_threshold"]
     assert r["evidence"]["watching_since_restart"] == 30 and len(listed) == 25
     assert listed[0]["name"] == "Sensor 29"  # longest-unavailable first
+
+
+# ---- flapping devices (Session C; the humidifier plug dropped off 3x on 2026-10-09)
+
+REG = [{"entity_id": "switch.humidifier", "device_id": "d1"},
+       {"entity_id": "sensor.humidifier_power", "device_id": "d1"},
+       {"entity_id": "button.humidifier_identify", "device_id": "d1", "entity_category": "config"},
+       {"entity_id": "light.lamp", "device_id": "d2"},
+       {"entity_id": "switch.lamp_led", "device_id": "d2", "disabled_by": "user"},
+       {"entity_id": "sensor.only_temp", "device_id": "d3"}]
+DEVS = [{"id": "d1", "name": "KP125M", "name_by_user": "Humidifier plug"}, {"id": "d2", "name": "Lamp"},
+        {"id": "d3", "name": "Thermo"}]
+
+
+def test_flap_candidates_one_per_device_no_sensors():
+    assert checks.flap_candidates(REG, DEVS) == {"switch.humidifier": "Humidifier plug", "light.lamp": "Lamp"}
+    assert checks.flap_candidates(None, DEVS) == {}
+
+
+def test_flapping_counts_drops_not_samples():
+    cands = checks.flap_candidates(REG, DEVS)
+    seq = ["on", "unavailable", "off", "unavailable", "unavailable", "off", "unavailable", "off"]
+    hist = {"switch.humidifier": [{"s": x} for x in seq],
+            "light.lamp": [{"s": "on"}, {"s": "unavailable"}, {"s": "on"}]}
+    r = checks.check_flapping(hist, cands)
+    assert r["status"] == "WARN" and "Humidifier plug (3x)" in r["reason"]
+    assert r["evidence"]["flapping"] == [{"name": "Humidifier plug", "drops_24h": 3}]
+    assert checks.check_flapping({"light.lamp": [{"s": "on"}]}, cands)["status"] == "PASS"
+
+
+def test_flapping_unreadable_is_unknown_and_starting_unavailable_is_not_a_drop():
+    cands = checks.flap_candidates(REG, DEVS)
+    assert checks.check_flapping(None, cands)["status"] == "UNKNOWN"
+    hist = {"switch.humidifier": [{"s": "unavailable"}, {"s": "on"}, {"s": "unavailable"}, {"s": "on"}]}
+    assert checks.check_flapping(hist, cands)["status"] == "PASS"   # 1 drop: the first row isn't a transition
+
+
+def test_battery_levels_reported_for_trends():
+    states = [{"entity_id": "sensor.lock_battery", "state": "62",
+               "attributes": {"device_class": "battery", "unit_of_measurement": "%", "friendly_name": "Lock battery"}},
+              {"entity_id": "sensor.phone_battery", "state": "5",
+               "attributes": {"device_class": "battery", "unit_of_measurement": "%"}}]
+    reg = [{"entity_id": "sensor.phone_battery", "platform": "mobile_app"}]
+    r = checks.check_batteries(states, reg)
+    assert r["status"] == "PASS" and r["evidence"]["levels"] == {"Lock battery": 62}

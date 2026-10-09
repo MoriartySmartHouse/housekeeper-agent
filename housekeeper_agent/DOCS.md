@@ -12,8 +12,9 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
   code is public in the repository above.
 - **What leaves your home:** check results only — e.g. "backup 8 h old", "Front door lock battery 18 %".
   That includes device names, the names of waiting updates (which show what apps you have installed), repair
-  ids, and the count — not the text — of your notifications. **Never** camera images, locations,
-  history, or your passwords.
+  ids, the level of each battery, the names of plugs/lights that keep dropping off the network, and the count —
+  not the text — of your notifications. **Never** camera images, locations, history, or your passwords. (To spot
+  drop-offs the App reads the last 24 h of on/off history of plugs, lights and switches; that stays in your home.)
 - To stop it at any time: stop or uninstall this App.
 
 ## Security
@@ -44,6 +45,21 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
 
 `central_url` must be `https://`; plain `http://` is accepted only for a private or Tailscale address.
 The App refuses to start (and says why in its log) if a required setting is blank or invalid.
+
+## Show Watson on a dashboard
+Add a **Markdown** card (Edit dashboard → Add card → Markdown) with this content:
+
+```
+## {{ state_attr('sensor.housekeeper_status', 'friendly_name') or 'Watson' }}
+{% set m = state_attr('sensor.housekeeper_status', 'messages') or [] %}
+{% if m %}{% for x in m %}- {{ x }}
+{% endfor %}{% else %}Everything looks good.{% endif %}
+{% set n = state_attr('sensor.housekeeper_status', 'note') %}{% if n %}
+
+*{{ n }}*{% endif %}
+
+<sub>Checked {{ relative_time(as_datetime(state_attr('sensor.housekeeper_status', 'checked_at'))) }} ago</sub>
+```
 
 ## Good to know
 - A Zigbee device is flagged as silent after it has been unavailable for 24 h. Zigbee2MQTT itself waits

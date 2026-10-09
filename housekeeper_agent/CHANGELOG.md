@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4
+- New check: **devices that keep dropping off** — a plug, light or switch that went unavailable 3 or more
+  times in 24 hours (e.g. weak WiFi). To see the short drop-offs it reads the last 24 h of on/off history of
+  one such entity per device, on your Home Assistant; only the device name and the number of drop-offs leave.
+- Watson's status now carries a weekly **note** from the Housekeeper service: what got sorted out this week and
+  any battery that will run out soon. A ready-made dashboard card is in the documentation.
+- Battery check: reports the level of every battery (not only the low ones), so the service can forecast
+  when a battery will run out.
+- Built on Python 3.14.
+
 ## 0.1.3
 - Home Assistant now downloads a prebuilt image for this App instead of building it on your machine:
   faster updates, less wear on the disk, no build failures. Your settings are kept.

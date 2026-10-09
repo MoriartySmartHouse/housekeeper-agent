@@ -19,12 +19,12 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -199,6 +199,13 @@ def gather(token):
         data["backup_info"] = fetch("backup/info", lambda: core.call("backup/info"), errors)
         data["repairs"] = fetch("repairs", lambda: (core.call("repairs/list_issues") or {}).get("issues"), errors)
         data["notifications"] = fetch("notifications", lambda: core.call("persistent_notification/get"), errors)
+        data["flap_candidates"] = checks.flap_candidates(data["entity_registry"], data["device_registry"])
+        if data["flap_candidates"]:
+            start = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+            ids = sorted(data["flap_candidates"])
+            data["history_24h"] = fetch("history", lambda: core.call("history/history_during_period", start_time=start,
+                                                                     entity_ids=ids, minimal_response=True,
+                                                                     no_attributes=True), errors)
         return data, core.ha_version
     finally:
         core.close()
@@ -225,6 +232,7 @@ def run_checks(data, opts, now, memory=None):
              silent_h=opts.get("silent_hours", 24), exceptions=opts.get("silent_exceptions", []),
              memory=memory.setdefault("silent_since", {})),
         safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25)),
+        safe("devices.flapping", checks.check_flapping, data.get("history_24h"), data.get("flap_candidates") or {}),
     ]
     for rule in opts.get("watch", []):
         if "invalid" in rule:
@@ -266,6 +274,8 @@ def write_house_status(token, reply, results, persona="Watson"):
         "icon": "mdi:shield-home" if state == "all_good" else "mdi:shield-alert",
         "messages": messages,
         "summary": f"{persona}: {summary}",
+        # Central's plain-words weekly note (what got fixed, what's coming, e.g. a battery running out).
+        "note": str(reply.get("note") or "")[:500] if isinstance(reply, dict) else "",
         "checked_at": datetime.now(UTC).isoformat(),
         "central_reached": reply is not None,
     }}

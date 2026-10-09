@@ -262,12 +262,60 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
     return result(cid, PASS, f"all {len(devices)} devices reporting{note}", evidence=ev)
 
 
+FLAP_DOMAINS = ("switch", "light", "fan", "lock", "cover", "climate", "media_player", "humidifier", "vacuum")
+
+
+def flap_candidates(entity_registry, device_registry):
+    """One entity per device, from domains whose state changes are rare, so 24 h of history stays small.
+    Sensor-only devices are left to devices.silent. -> {entity_id: device name}"""
+    if not isinstance(entity_registry, list) or not isinstance(device_registry, list):
+        return {}
+    names = {d.get("id"): d.get("name_by_user") or d.get("name") for d in device_registry}
+    picked = {}
+    for e in sorted(entity_registry, key=lambda e: e.get("entity_id", "")):
+        dev, eid = e.get("device_id"), e.get("entity_id", "")
+        if (not dev or dev in picked or e.get("disabled_by") or e.get("entity_category")
+                or eid.split(".", 1)[0] not in FLAP_DOMAINS):
+            continue
+        picked[dev] = eid
+    return {eid: names.get(dev) or eid for dev, eid in picked.items()}
+
+
+def check_flapping(history, candidates, min_drops=3):
+    """Devices that dropped off (-> unavailable) `min_drops` or more times in the window — e.g. a WiFi plug that
+    keeps falling off the network. Each drop is short, so hourly snapshots never see it; history does.
+    history = {entity_id: [{"s": state, ...}, ...]} (HA's compressed history/history_during_period)."""
+    cid = "devices.flapping"
+    if not candidates:
+        return result(cid, PASS, "no switch/light-type devices to watch", evidence={"devices_checked": 0})
+    if not isinstance(history, dict):
+        return unknown(cid, "history/history_during_period returned no dict")
+    flappy = []
+    for eid, rows in history.items():
+        if eid not in candidates or not isinstance(rows, list):
+            continue
+        drops, prev = 0, None
+        for r in rows:
+            s = r.get("s") if isinstance(r, dict) else None
+            if s == "unavailable" and prev not in (None, "unavailable"):
+                drops += 1
+            prev = s
+        if drops >= min_drops:
+            flappy.append((candidates[eid], drops))
+    flappy.sort(key=lambda x: -x[1])
+    ev = {"devices_checked": len(candidates), "flapping": [{"name": n, "drops_24h": d} for n, d in flappy]}
+    if not flappy:
+        return result(cid, PASS, f"no device dropped off {min_drops}+ times in 24 h", evidence=ev)
+    listed = ", ".join(f"{n} ({d}x)" for n, d in flappy[:5])
+    return result(cid, WARN, f"{len(flappy)} device(s) keep dropping off: {listed}", evidence=ev)
+
+
 def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_platforms=("mobile_app",)):
     cid = "devices.battery"
     if not isinstance(states, list) or not isinstance(entity_registry, list):
         return unknown(cid, "states / entity registry not readable")
     platform = {e.get("entity_id"): e.get("platform") for e in entity_registry}
-    low = []
+    low, levels = [], {}
     seen = 0
     for s in states:
         a = s.get("attributes", {})
@@ -280,10 +328,14 @@ def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_p
         except (TypeError, ValueError):
             continue
         seen += 1
+        name = a.get("friendly_name") or s["entity_id"]
+        levels[name[:60]] = round(pct)
         if pct <= warn_pct:
-            low.append((a.get("friendly_name") or s["entity_id"], pct))
+            low.append((name, pct))
     low.sort(key=lambda x: x[1])
-    ev = {"batteries_checked": seen, "low": [{"name": n, "pct": p} for n, p in low]}
+    # `levels` (name -> %, all batteries) lets central project days-left from the trend (Session C).
+    ev = {"batteries_checked": seen, "low": [{"name": n, "pct": p} for n, p in low],
+          "levels": dict(sorted(levels.items())[:60])}
     if not seen:
         return unknown(cid, "no battery sensors found")
     if not low:
