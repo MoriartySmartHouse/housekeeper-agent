@@ -25,6 +25,7 @@ options:
   silent_hours: 24
   battery_warn_pct: 25
   silent_exceptions: []
+  automation_exceptions: []
   watch_entities: []
   watch: []
 schema:
@@ -37,6 +38,8 @@ schema:
   silent_hours: int(1,720)
   battery_warn_pct: int(5,60)
   silent_exceptions:
+    - str
+  automation_exceptions:
     - str
   watch_entities:
     - entity: str

@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -302,3 +303,44 @@ def test_updates_carry_versions_and_integrations():
                                          {"installed": "2026.10.0", "latest": "2026.10.1"}}
     assert r["evidence"]["integrations"] == ["mqtt", "zha"]
     assert "integrations" not in checks.check_updates(states)["evidence"]   # unread config: just left out
+
+
+def _auto(eid, state="on", last=None, name=None):
+    return {"entity_id": eid, "state": state,
+            "attributes": {"friendly_name": name or eid, "last_triggered": last and last.isoformat()}}
+
+
+def test_automation_stopped_is_learned_then_flagged():
+    t0 = datetime(2026, 9, 1, 8, tzinfo=UTC)
+    mem = {}
+    # Driveway Alert fires daily; the leak alarm fired once months ago; one automation is broken.
+    for day in range(6):
+        now = t0 + timedelta(days=day, hours=1)
+        states = [_auto("automation.driveway", last=t0 + timedelta(days=day), name="Driveway Alert"),
+                  _auto("automation.leak", last=datetime(2026, 3, 1, tzinfo=UTC))]
+        r = checks.check_automations(states, now, mem)
+        assert r["status"] == "PASS"
+    assert len(mem["automation.driveway"]) == 6 and len(mem["automation.leak"]) == 1
+    # 3 days quiet: under 4x a 1-day gap -> fine; 5 days quiet -> stopped
+    last = t0 + timedelta(days=5)
+    states = [_auto("automation.driveway", last=last, name="Driveway Alert"),
+              _auto("automation.leak", last=datetime(2026, 3, 1, tzinfo=UTC))]
+    assert checks.check_automations(states, last + timedelta(days=3), mem)["status"] == "PASS"
+    r = checks.check_automations(states, last + timedelta(days=5), mem)
+    assert r["status"] == "WARN" and "Driveway Alert (silent 5.0 d, usually every 24 h)" in r["reason"]
+    assert "leak" not in r["reason"]                       # one trigger on record: still learning, never flagged
+    assert r["evidence"]["stopped"] == [{"name": "Driveway Alert", "silent_d": 5.0, "usual_gap_h": 24.0}]
+    assert "2026-" not in json.dumps(r["evidence"])        # trigger times never leave the house
+    assert checks.check_automations(states, last + timedelta(days=5), mem,
+                                    exceptions=["Driveway Alert"])["status"] == "PASS"
+
+
+def test_automation_unavailable_and_disabled():
+    mem = {"automation.off": ["2026-09-01T00:00:00+00:00"]}
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    r = checks.check_automations([_auto("automation.bad", state="unavailable", name="Broken one"),
+                                  _auto("automation.off", state="off")], now, mem)
+    assert r["status"] == "WARN" and "1 not loaded (unavailable): Broken one" in r["reason"]
+    assert "automation.off" not in mem                     # disabled on purpose: forgotten
+    assert checks.check_automations([], now, {})["status"] == "UNKNOWN"
+    assert checks.check_automations(None, now, {})["status"] == "UNKNOWN"

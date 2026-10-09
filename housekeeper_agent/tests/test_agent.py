@@ -20,7 +20,7 @@ def test_one_broken_check_does_not_kill_the_card(monkeypatch):
     monkeypatch.setattr(checks, "check_batteries", boom)
     out = agent.run_checks({"errors": {}, "states": []}, {"watch": []}, NOW)
     by_id = {c["id"]: c["status"] for c in out}
-    assert by_id["devices.battery"] == "UNKNOWN" and len(out) == 10   # 0.1.4: + devices.flapping
+    assert by_id["devices.battery"] == "UNKNOWN" and len(out) == 11   # 0.1.5: + automations.stopped
 
 
 def test_bad_watch_entries_become_unknown_not_crash():

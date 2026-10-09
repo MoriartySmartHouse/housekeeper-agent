@@ -5,6 +5,11 @@
   the list of integrations your Home Assistant has loaded (their short names only, e.g. `mqtt`, `zha`). The
   Housekeeper service matches these against each Home Assistant release's breaking changes, so you hear *before*
   updating which changes touch your home. Read with one more read-only call (`get_config`).
+- New check: **automations that stopped firing.** Watson learns, in your home, how often each automation usually
+  runs; one that has gone quiet for 4x its usual gap (at least 2 days) is reported, as is one Home Assistant could
+  not load. Rarely-running automations such as leak alarms are never flagged. Trigger times stay in your home —
+  only the automation's name and "silent N days, usually every X" leave. Needs a few runs of each automation to learn;
+  ignore any with the new *Automations to ignore* setting.
 
 ## 0.1.4
 - New check: **devices that keep dropping off** — a plug, light or switch that went unavailable 3 or more

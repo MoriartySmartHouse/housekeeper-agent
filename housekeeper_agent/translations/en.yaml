@@ -26,6 +26,10 @@ configuration:
   silent_exceptions:
     name: Devices to ignore
     description: Device names that should never be reported as silent (e.g. something unplugged on purpose).
+  automation_exceptions:
+    name: Automations to ignore
+    description: >-
+      Automation names (or automation.* ids) never to report as "stopped firing" — e.g. a seasonal one.
   watch_entities:
     name: Things to watch
     description: >-

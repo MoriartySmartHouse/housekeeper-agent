@@ -9,6 +9,7 @@ never PASS. A breaking HA change must look like a grey check, not a healthy hous
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 
 PASS, WARN, FAIL, UNKNOWN = "PASS", "WARN", "FAIL", "UNKNOWN"
 
@@ -363,6 +364,85 @@ def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_p
                   f"{first} needs a new battery soon." if len(low) == 1
                   else f"{len(low)} devices need new batteries soon, starting with {first}.",
                   "household", ev)
+
+
+# ---------------------------------------------------------------- automations
+
+KEEP_TRIGGERS = 30        # trigger times remembered per automation (house-side only)
+MIN_TRIGGERS = 5          # need this many (4 gaps) before judging "stopped"
+
+
+def _median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def check_automations(states, now, memory=None, factor=4, min_silent_h=48, exceptions=()):
+    """Automations that stopped firing (the AUTO-11 class: Driveway Alert dead for 7 weeks, nothing noticed) and
+    automations HA could not load (state `unavailable`).
+
+    "Stopped" is learned per automation, house-side: `memory` ({entity_id: [iso trigger times]}, kept in
+    /data/memory.json) collects each new `last_triggered`; once MIN_TRIGGERS are known, an automation silent for more
+    than `factor` x its median gap (and at least `min_silent_h`) is flagged. Rarely-firing automations (leak alarms)
+    have long gaps, so they never trip it. Trigger times never leave the house — only the conclusion does."""
+    cid = "automations.stopped"
+    if not isinstance(states, list):
+        return unknown(cid, "get_states returned no list")
+    memory = {} if memory is None else memory
+    autos = [s for s in states if s.get("entity_id", "").startswith("automation.")]
+    if not autos:
+        return unknown(cid, "no automation entities found")
+    broken, stopped, learning = [], [], 0
+    present = set()
+    for s in autos:
+        eid = s["entity_id"]
+        present.add(eid)
+        name = (s.get("attributes") or {}).get("friendly_name") or eid
+        if name in exceptions or eid in exceptions:
+            memory.pop(eid, None)
+            continue
+        if s.get("state") == "unavailable":
+            broken.append(name)
+            continue
+        if s.get("state") != "on":
+            memory.pop(eid, None)          # disabled on purpose: forget, relearn if re-enabled
+            continue
+        try:
+            last = parse_ts((s.get("attributes") or {}).get("last_triggered"))
+        except ValueError:
+            last = None
+        seen = memory.setdefault(eid, [])
+        if last and (not seen or last.isoformat() > seen[-1]):
+            seen.append(last.isoformat())
+            del seen[:-KEEP_TRIGGERS]
+        if len(seen) < MIN_TRIGGERS:
+            learning += 1
+            continue
+        times = [parse_ts(t) for t in seen]
+        gap_h = _median([(b - a).total_seconds() / 3600 for a, b in pairwise(times)])
+        silent_h = (now - times[-1]).total_seconds() / 3600
+        if silent_h > max(factor * gap_h, min_silent_h):
+            stopped.append((name, silent_h, gap_h))
+    for eid in [e for e in memory if e not in present]:
+        memory.pop(eid)
+    stopped.sort(key=lambda x: -x[1] / max(x[2], 0.01))
+    ev = {"automations": len(autos), "learning": learning, "unavailable": sorted(broken)[:30],
+          "stopped": [{"name": n, "silent_d": round(s / 24, 1), "usual_gap_h": round(g, 1)} for n, s, g in stopped]}
+    bits = []
+    if broken:
+        bits.append(f"{len(broken)} not loaded (unavailable): {', '.join(sorted(broken)[:5])}")
+    if stopped:
+        bits.append(f"{len(stopped)} stopped firing: " + ", ".join(
+            f"{n} (silent {round(s / 24, 1)} d, usually every {_gap_text(g)})" for n, s, g in stopped[:5]))
+    if bits:
+        return result(cid, WARN, "; ".join(bits), evidence=ev)
+    note = f"; still learning {learning}" if learning else ""
+    return result(cid, PASS, f"{len(autos)} automations, none stopped{note}", evidence=ev)
+
+
+def _gap_text(h):
+    return f"{h:.0f} h" if h < 48 else f"{h / 24:.0f} d"
 
 
 # ---------------------------------------------------------------- platform / site-specific

@@ -21,3 +21,4 @@ Review each HA release's "Backward-incompatible changes" against this list.
 | 14 | Core WS | `history/history_during_period` (24 h, `minimal_response`, `no_attributes`) | `{entity_id: [{"s": state}]}` | devices.flapping |
 | 15 | Core WS | `get_config` | `components` (list of `"domain"` / `"platform.domain"` strings) | ha.updates (`integrations`) |
 | 16 | Conventions | `update.*` attributes `installed_version`, `latest_version` | | ha.updates (`versions`) |
+| 17 | Conventions | `automation.*` state `on`/`off`/`unavailable`, attribute `last_triggered` (ISO or null), `friendly_name` | | automations.stopped |

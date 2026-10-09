@@ -12,7 +12,8 @@ house assistant (`sensor.housekeeper_status`; you can rename Watson in the setti
   code is public in the repository above.
 - **What leaves your home:** check results only — e.g. "backup 8 h old", "Front door lock battery 18 %".
   That includes device names, the names and versions of waiting updates (which show what apps you have installed), the short names of the integrations your Home Assistant has loaded (e.g. `mqtt` — used to warn you about breaking changes before you update), repair
-  ids, the level of each battery, the names of plugs/lights that keep dropping off the network, and the count —
+  ids, the level of each battery, the names of plugs/lights that keep dropping off the network, the names of automations that stopped running (with
+  how long and how often they usually run — the trigger times themselves stay in your home), and the count —
   not the text — of your notifications. **Never** camera images, locations, history, or your passwords. (To spot
   drop-offs the App reads the last 24 h of on/off history of plugs, lights and switches; that stays in your home.)
 - To stop it at any time: stop or uninstall this App.

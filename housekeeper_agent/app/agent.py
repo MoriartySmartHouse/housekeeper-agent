@@ -234,6 +234,8 @@ def run_checks(data, opts, now, memory=None):
              memory=memory.setdefault("silent_since", {})),
         safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25)),
         safe("devices.flapping", checks.check_flapping, data.get("history_24h"), data.get("flap_candidates") or {}),
+        safe("automations.stopped", checks.check_automations, s, now, memory.setdefault("triggers", {}),
+             exceptions=opts.get("automation_exceptions", [])),
     ]
     for rule in opts.get("watch", []):
         if "invalid" in rule:
