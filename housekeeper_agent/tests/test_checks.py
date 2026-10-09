@@ -344,3 +344,19 @@ def test_automation_unavailable_and_disabled():
     assert "automation.off" not in mem                     # disabled on purpose: forgotten
     assert checks.check_automations([], now, {})["status"] == "UNKNOWN"
     assert checks.check_automations(None, now, {})["status"] == "UNKNOWN"
+
+
+def test_review_restored_placeholders_and_bad_memory():
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    starting = {"entity_id": "automation.x", "state": "unavailable", "attributes": {"restored": True}}
+    mem = {"automation.y": "garbage", "automation.z": ["not a time"]}
+    r = checks.check_automations([starting, _auto("automation.y", last=now), _auto("automation.z", last=now)], now, mem)
+    assert r["status"] == "PASS"                                  # HA starting up is not "not loaded"
+    assert mem["automation.y"] == [now.isoformat()] and mem["automation.z"] == [now.isoformat()]
+
+
+def test_review_core_update_kept_when_many_waiting():
+    states = [{"entity_id": f"update.addon_{i:02d}", "state": "on", "attributes": {}} for i in range(40)]
+    states.append({"entity_id": "update.home_assistant_core_update", "state": "on",
+                   "attributes": {"installed_version": "2026.10.0", "latest_version": "2026.10.1"}})
+    assert "update.home_assistant_core_update" in checks.check_updates(states)["evidence"]["versions"]

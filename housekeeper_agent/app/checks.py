@@ -149,6 +149,8 @@ def check_updates(states, integrations=None):
     if not isinstance(states, list):
         return unknown(cid, "get_states returned no list")
     waiting = [s for s in states if s.get("entity_id", "").startswith("update.") and s.get("state") == "on"]
+    # HA's own updates first, so a house with 30+ waiting updates still reports the Core version.
+    waiting.sort(key=lambda s: "home_assistant" not in s["entity_id"])
     pending = [s["entity_id"] for s in waiting]
     versions = {s["entity_id"]: {"installed": str(s.get("attributes", {}).get("installed_version") or "")[:40],
                                  "latest": str(s.get("attributes", {}).get("latest_version") or "")[:40]}
@@ -385,7 +387,9 @@ def check_automations(states, now, memory=None, factor=4, min_silent_h=48, excep
     "Stopped" is learned per automation, house-side: `memory` ({entity_id: [iso trigger times]}, kept in
     /data/memory.json) collects each new `last_triggered`; once MIN_TRIGGERS are known, an automation silent for more
     than `factor` x its median gap (and at least `min_silent_h`) is flagged. Rarely-firing automations (leak alarms)
-    have long gaps, so they never trip it. Trigger times never leave the house — only the conclusion does."""
+    have long gaps, so they never trip it. Trigger times never leave the house — only the conclusion does.
+    Known limit: an automation already dead when the agent is installed never collects MIN_TRIGGERS, so it stays
+    "learning" — without history it can't be told apart from a rarely-firing one (shown in evidence as `learning`)."""
     cid = "automations.stopped"
     if not isinstance(states, list):
         return unknown(cid, "get_states returned no list")
@@ -398,7 +402,10 @@ def check_automations(states, now, memory=None, factor=4, min_silent_h=48, excep
     for s in autos:
         eid = s["entity_id"]
         present.add(eid)
-        name = (s.get("attributes") or {}).get("friendly_name") or eid
+        attrs = s.get("attributes") or {}
+        name = attrs.get("friendly_name") or eid
+        if attrs.get("restored"):
+            continue   # placeholder while HA is still starting: not loaded *yet*, not broken
         if name in exceptions or eid in exceptions:
             memory.pop(eid, None)
             continue
@@ -412,7 +419,10 @@ def check_automations(states, now, memory=None, factor=4, min_silent_h=48, excep
             last = parse_ts((s.get("attributes") or {}).get("last_triggered"))
         except ValueError:
             last = None
-        seen = memory.setdefault(eid, [])
+        seen = memory.get(eid)
+        if not isinstance(seen, list) or not all(isinstance(t, str) and _valid_ts(t) for t in seen):
+            seen = []   # a damaged memory entry is relearned, never a check stuck on UNKNOWN
+        memory[eid] = seen
         if last and (not seen or last.isoformat() > seen[-1]):
             seen.append(last.isoformat())
             del seen[:-KEEP_TRIGGERS]
@@ -439,6 +449,13 @@ def check_automations(states, now, memory=None, factor=4, min_silent_h=48, excep
         return result(cid, WARN, "; ".join(bits), evidence=ev)
     note = f"; still learning {learning}" if learning else ""
     return result(cid, PASS, f"{len(autos)} automations, none stopped{note}", evidence=ev)
+
+
+def _valid_ts(text):
+    try:
+        return parse_ts(text) is not None
+    except ValueError:
+        return False
 
 
 def _gap_text(h):
