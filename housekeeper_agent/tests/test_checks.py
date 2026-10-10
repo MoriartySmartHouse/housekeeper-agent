@@ -511,3 +511,38 @@ def test_log_errors_by_integration_counts_only():
     assert "192.168" not in json.dumps(r)                               # never the log text
     assert checks.check_log_errors([], now)["status"] == "PASS"
     assert checks.check_log_errors(None, now)["status"] == "UNKNOWN"
+
+
+def test_house_facts_sends_only_whitelisted_numbers():
+    now = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+    st = [{"entity_id": "sensor.house_facts", "state": "2026-10-10",
+           "attributes": {"heating": {"min_per_hdd_7d": 7.9, "min_per_hdd_normal": 8.3, "normal_days": 9,
+                                      "secret": "x", "outdoor_mean_7d": 7.7, "days_7d": True},
+                          "downstairs_gap": {"mean_7d": 2.05, "normal": 1.93, "normal_days": 9},
+                          "friendly_name": "House facts", "notes": "free text never leaves"}}]
+    r = checks.check_house_facts(st, "sensor.house_facts", now)
+    assert r["status"] == checks.PASS   # numbers for central; the wording happens there
+    assert r["evidence"] == {"through": "2026-10-10",
+                             "heating": {"min_per_hdd_7d": 7.9, "min_per_hdd_normal": 8.3, "normal_days": 9,
+                                         "outdoor_mean_7d": 7.7},
+                             "downstairs_gap": {"mean_7d": 2.05, "normal": 1.93, "normal_days": 9}}
+
+
+def test_house_facts_missing_empty_or_stale():
+    now = datetime(2026, 10, 20, tzinfo=UTC)
+    assert checks.check_house_facts([], "sensor.house_facts", now)["status"] == checks.UNKNOWN
+    assert checks.check_house_facts(None, "sensor.house_facts", now)["status"] == checks.UNKNOWN
+    empty = [{"entity_id": "sensor.house_facts", "state": "unknown", "attributes": {}}]
+    assert checks.check_house_facts(empty, "sensor.house_facts", now)["status"] == checks.UNKNOWN
+    old = [{"entity_id": "sensor.house_facts", "state": "2026-10-10",
+            "attributes": {"heating": {"min_per_hdd_7d": 7.9}}}]
+    assert checks.check_house_facts(old, "sensor.house_facts", now)["status"] == checks.WARN
+
+
+def test_house_facts_is_opt_in():
+    from housekeeper_agent.app import agent
+    ids = {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, {}, datetime(2026, 10, 11, tzinfo=UTC))}
+    assert "house.facts" not in ids
+    ids = {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, {"facts_entity": "sensor.house_facts"},
+                                             datetime(2026, 10, 11, tzinfo=UTC))}
+    assert "house.facts" in ids

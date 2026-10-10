@@ -53,3 +53,8 @@ configuration:
   watch:
     name: Things to watch (old format)
     description: Older JSON format, kept for compatibility. Use "Things to watch" instead.
+  facts_entity:
+    name: House facts sensor (optional)
+    description: >-
+      A sensor whose attributes hold this home's heating and comfort numbers (e.g. sensor.house_facts). Only those
+      numbers are sent, so the weekly note can say what is unusual for this home. Leave empty if you don't have one.
