@@ -16,6 +16,7 @@ import os
 import signal
 import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -24,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -32,6 +33,7 @@ OPTIONS_FILE = "/data/options.json"
 MEMORY_FILE = "/data/memory.json"
 STATUS_ENTITY = "sensor.housekeeper_status"
 CORE_RETRY_S = 60
+STATUS_WATCH_S = 180   # between runs: is our sensor still there? (an HA restart wipes it)
 MIN_KEY_LEN = 32
 
 log = logging.getLogger("housekeeper")
@@ -278,8 +280,8 @@ def household_list(reply, results):
             if r.get("household") and r.get("status") in (checks.WARN, checks.FAIL)]
 
 
-def write_house_status(token, reply, results, persona="Watson"):
-    """The one write: our own sensor, so the household sees their house assistant's status in HA."""
+def house_status(reply, results, persona="Watson"):
+    """Our sensor's state + attributes, so the household sees their house assistant's status in HA."""
     messages = household_list(reply, results)
     state = "attention" if messages else "all_good"
     summary = "all good" if not messages else f"{len(messages)} things need attention"
@@ -293,7 +295,41 @@ def write_house_status(token, reply, results, persona="Watson"):
         "checked_at": datetime.now(UTC).isoformat(),
         "central_reached": reply is not None,
     }}
+    return body
+
+
+def write_house_status(token, body):
+    """The one write: our own sensor. Hourly from `cycle`, and again from `repost_status` after an HA restart."""
     http("POST", f"{SUPERVISOR}/core/api/states/{STATUS_ENTITY}", token, body)
+
+
+def status_missing(token):
+    """True when HA answers but our sensor is gone (404) or unknown: a state set over the API does not survive an HA
+    restart, so the dashboards would show no Watson until the next run. False when it is there. None when HA is not
+    answering (restarting, or the Supervisor proxy says 502): just wait. One read-only GET, never raises."""
+    try:
+        st = http("GET", f"{SUPERVISOR}/core/api/states/{STATUS_ENTITY}", token, timeout=10)
+    except urllib.error.HTTPError as exc:
+        return True if exc.code == 404 else None
+    except Exception:  # noqa: BLE001 — HA down / restarting
+        return None
+    if not isinstance(st, dict):
+        return None
+    return st.get("state") in (None, "unknown", "unavailable")
+
+
+def repost_status(token, body):
+    """Put the last status back, unchanged, once HA is answering again without it. No checks run, nothing goes to
+    central. Nothing to do before the first run has written one. Never raises."""
+    if not body or status_missing(token) is not True:
+        return False
+    try:
+        write_house_status(token, body)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not re-post %s: %s", STATUS_ENTITY, exc)
+        return False
+    log.info("status re-posted after Home Assistant restart")
+    return True
 
 
 def cycle(opts, token):
@@ -310,16 +346,18 @@ def cycle(opts, token):
         log.info("report sent: %s", (reply or {}).get("score"))
     except Exception as exc:  # noqa: BLE001
         log.error("could not reach central: %s", exc)
+    status = None
     try:
-        write_house_status(token, reply, results, opts.get("persona") or "Watson")
-    except Exception as exc:  # noqa: BLE001
+        status = house_status(reply, results, opts.get("persona") or "Watson")
+        write_house_status(token, status)
+    except Exception as exc:  # noqa: BLE001 — kept anyway: repost_status puts it there once HA answers
         log.error("could not write %s: %s", STATUS_ENTITY, exc)
     if opts.get("healthchecks_url"):
         try:
             _opener.open(opts["healthchecks_url"], timeout=10)
         except Exception as exc:  # noqa: BLE001
             log.warning("healthchecks ping failed: %s", exc)
-    return card, reply
+    return card, reply, status
 
 
 def load_options(path=OPTIONS_FILE):
@@ -340,6 +378,18 @@ def stop(signum, _frame):
     raise SystemExit(0)
 
 
+def wait_for_next_run(token, status, started, interval):
+    """Sleep until the next run (at least 60 s), glancing at our sensor every STATUS_WATCH_S on the way."""
+    deadline = max(started + interval, time.monotonic() + 60)
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(STATUS_WATCH_S, left))
+        if time.monotonic() < deadline:
+            repost_status(token, status)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     signal.signal(signal.SIGTERM, stop)
@@ -349,13 +399,15 @@ def main():
     token = os.environ["SUPERVISOR_TOKEN"]
     interval = max(5, int(opts.get("interval_minutes", 60))) * 60
     log.info("Housekeeper Agent %s for site %s, every %d min", VERSION, opts["site_id"], interval // 60)
+    status = None   # the last status we wrote (in memory: a fresh App start runs a cycle straight away)
     while True:
         started = time.monotonic()
         try:
-            cycle(opts, token)
+            _, _, written = cycle(opts, token)
+            status = written or status
         except Exception:
             log.exception("cycle failed")
-        time.sleep(max(60, interval - (time.monotonic() - started)))
+        wait_for_next_run(token, status, started, interval)
 
 
 if __name__ == "__main__":

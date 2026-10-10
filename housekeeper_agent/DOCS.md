@@ -3,7 +3,8 @@
 Once an hour this App checks the health of your home — backups, repairs, waiting updates, devices that
 have stopped reporting, low batteries — and sends a short report card to the Housekeeper service run by the
 person who looks after your system. It shows the result in your Home Assistant as a status from **Watson**, your
-house assistant (`sensor.housekeeper_status`; you can rename Watson in the settings).
+house assistant (`sensor.housekeeper_status`; you can rename Watson in the settings). Home Assistant forgets this
+status when it restarts, so between hourly checks the App looks every few minutes and puts the last one back.
 
 ## What it can see, and what leaves your home
 - To read your system it uses the access Home Assistant gives Apps that talk to it. **Be aware: that access
