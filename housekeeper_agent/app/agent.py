@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -250,6 +250,8 @@ def run_checks(data, opts, now, memory=None):
         safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
              hours_needed=opts.get("zero_power_hours", 6), exceptions=opts.get("zero_power_exceptions", [])),
     ]
+    if opts.get("facts_entity"):
+        out.append(safe("house.facts", checks.check_house_facts, s, opts["facts_entity"], now))
     for rule in opts.get("watch", []):
         if "invalid" in rule:
             out.append(checks.unknown("watch.invalid", f"bad watch entry {rule['invalid']!r}: {rule['error']}"))

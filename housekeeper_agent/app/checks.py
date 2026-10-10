@@ -713,3 +713,39 @@ def check_watched_entity(states, rule, now):
             return result(cid, FAIL, f"{eid} = {st.get('state')} for {round(mins)} min", evidence=ev)
         return result(cid, WARN, f"{eid} = {st.get('state')} ({round(mins)} min)", evidence=ev)
     return result(cid, PASS, f"{eid} = {st.get('state')}", evidence=ev)
+
+
+# House facts (DEC-48): numbers the house computes about itself (heating per degree-day, the downstairs gap, each
+# against the house's own normal). Only these whitelisted numeric fields leave the house; central compares and words.
+FACT_FIELDS = {
+    "heating": ("min_per_hdd_7d", "days_7d", "min_per_hdd_normal", "normal_days", "outdoor_mean_7d"),
+    "downstairs_gap": ("mean_7d", "normal", "normal_days"),
+}
+FACTS_STALE_DAYS = 3
+
+
+def check_house_facts(states, eid, now):
+    """Opt-in (`facts_entity`): read the facts entity's attributes. Missing entity -> UNKNOWN (never PASS);
+    facts older than FACTS_STALE_DAYS -> WARN (operator: the house stopped computing them)."""
+    cid = "house.facts"
+    if not isinstance(states, list):
+        return unknown(cid, "get_states returned no list")
+    st = next((s for s in states if s.get("entity_id") == eid), None)
+    if st is None:
+        return unknown(cid, f"{eid} does not exist")
+    attrs = st.get("attributes") or {}
+    ev = {"through": str(st.get("state"))[:10]}
+    for group, fields in FACT_FIELDS.items():
+        src = attrs.get(group) if isinstance(attrs.get(group), dict) else {}
+        vals = {f: src[f] for f in fields if isinstance(src.get(f), (int, float)) and not isinstance(src.get(f), bool)}
+        if vals:
+            ev[group] = vals
+    if len(ev) == 1:
+        return unknown(cid, f"{eid} has no usable facts yet")
+    try:
+        through = parse_ts(ev["through"] + "T00:00:00+00:00")
+    except ValueError:
+        through = None
+    if through and (now - through).days > FACTS_STALE_DAYS:
+        return result(cid, WARN, f"house facts not updated since {ev['through']}", evidence=ev)
+    return result(cid, PASS, f"house facts through {ev['through']}", evidence=ev)

@@ -171,3 +171,11 @@ def test_cycle_keeps_the_status_it_wrote(monkeypatch):
                                 "watch": []}, "t")
     assert status["attributes"]["friendly_name"] == "Watson"
     assert posts[-1] == ("POST", f"{agent.SUPERVISOR}/core/api/states/{agent.STATUS_ENTITY}", status)
+
+
+def test_house_facts_is_opt_in():
+    from datetime import UTC, datetime
+    now = datetime(2026, 10, 11, tzinfo=UTC)
+    assert "house.facts" not in {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, {}, now)}
+    opts = {"facts_entity": "sensor.house_facts"}
+    assert "house.facts" in {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, opts, now)}

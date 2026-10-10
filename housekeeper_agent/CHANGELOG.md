@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+- **Weekly note can say what's unusual for this home.** New optional setting *House facts sensor*: if your home
+  computes its own heating and comfort numbers (heating minutes per degree of cold, how much cooler downstairs runs),
+  the App sends **just those numbers**, and the weekly note compares them with your home's own normal ("the furnace
+  worked harder than usual for this weather"). Off unless you set it.
+
 ## 0.1.9
 - **Watson's status comes back straight after a Home Assistant restart.** Home Assistant forgets it on every restart,
   so dashboards showed no Watson for up to an hour; now the App looks every few minutes and puts the last status back
