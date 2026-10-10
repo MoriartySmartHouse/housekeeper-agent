@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+- **Switched on but drawing nothing** is more accurate on multi-outlet power strips: each outlet is measured by its
+  own meter, and the strip's main switch is no longer listed alongside the outlet that keeps it on.
+- **Integrations**: on the first check that sees one failing, the summary now says how many are loaded instead of
+  "all loaded" (it is still only reported after two checks in a row).
+
 ## 0.1.7
 - New check: **integrations that aren't working** — anything Home Assistant failed to set up or keeps retrying
   (e.g. a smart plug that has been off the network for weeks), once it has been failing for two hourly checks.

@@ -406,6 +406,33 @@ def test_zero_power_waits_hours_then_flags():
     assert checks.check_zero_power(None, R, t0)["status"] == "UNKNOWN"
 
 
+def test_zero_power_strip_outlets_on_one_device():
+    """HS300 as seen live 2026-10-10: strip switch + outlet switches + their meters all on one device."""
+    t0 = datetime(2026, 10, 9, 8, tzinfo=UTC)
+    p = "tp_link_power_strip_7a93"
+    reg = [{"entity_id": e, "device_id": "s"} for e in (
+        f"switch.{p}", f"switch.{p}_plug_2", f"switch.{p}_plug_4", f"switch.{p}_led",
+        f"sensor.{p}_current_consumption", f"sensor.{p}_plug_2_current_consumption",
+        f"sensor.{p}_plug_4_current_consumption")]
+    reg[3]["entity_category"] = "config"
+
+    def sw(eid, state, name):
+        return {"entity_id": eid, "state": state, "last_changed": t0.isoformat(), "attributes": {"friendly_name": name}}
+
+    def pw(eid, w):
+        return {"entity_id": eid, "state": str(w), "last_changed": t0.isoformat(),
+                "attributes": {"device_class": "power", "unit_of_measurement": "W"}}
+
+    sts = [sw(f"switch.{p}", "on", "Strip"), sw(f"switch.{p}_plug_2", "on", "Strip Plug 2"),
+           sw(f"switch.{p}_plug_4", "on", "Strip Plug 4"), sw(f"switch.{p}_led", "on", "Strip LED"),
+           pw(f"sensor.{p}_current_consumption", 30.0), pw(f"sensor.{p}_plug_2_current_consumption", 0.0),
+           pw(f"sensor.{p}_plug_4_current_consumption", 30.0)]
+    r = checks.check_zero_power(sts, reg, t0 + timedelta(hours=20), {})
+    # only the idle outlet, measured by its own meter; strip switch and LED not listed
+    assert r["status"] == "WARN" and r["reason"] == "1 switched on but drawing nothing: Strip Plug 2 (20 h)"
+    assert r["evidence"]["switches_with_meter"] == 2
+
+
 def test_integrations_failing_twice_in_a_row():
     entries = [{"entry_id": "a", "domain": "wled", "title": "Entertainment Stand", "state": "setup_retry"},
                {"entry_id": "b", "domain": "tplink", "title": "Computer Plug", "state": "setup_error"},
@@ -415,6 +442,7 @@ def test_integrations_failing_twice_in_a_row():
     mem = {}
     r = checks.check_integrations(entries, mem)
     assert r["status"] == "PASS" and set(mem) == {"a", "b"}            # first sighting: wait an hour
+    assert r["reason"] == "1 of 3 integrations loaded; 2 not loading, checked again next run"
     r = checks.check_integrations(entries, mem)
     assert r["status"] == "WARN" and r["reason"].startswith("2 integration(s) not working: tplink: Computer Plug")
     assert "wled: Entertainment Stand (setup retry)" in r["reason"] and r["evidence"]["integrations"] == 3

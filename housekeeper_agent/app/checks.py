@@ -485,7 +485,7 @@ def check_disk(host, warn_free_gb=5.0, fail_free_gb=1.5, warn_pct=85):
 
 
 def _power_sensors(states, entity_registry):
-    """{device_id: (entity_id, watts, last_changed)} — the device's power sensor (W), if it has one."""
+    """{device_id: [(entity_id, watts, last_changed)]} — the device's power sensors (W), if it has any."""
     by_id = {s.get("entity_id"): s for s in states}
     out = {}
     for e in entity_registry:
@@ -499,8 +499,22 @@ def _power_sensors(states, entity_registry):
             watts = float(st.get("state"))
         except (TypeError, ValueError):
             continue
-        out.setdefault(e["device_id"], (e["entity_id"], watts, parse_ts(st.get("last_changed"))))
+        out.setdefault(e["device_id"], []).append((e["entity_id"], watts, parse_ts(st.get("last_changed"))))
     return out
+
+
+def _switch_meter(eid, dev_switches, meters):
+    """The power sensor that measures this switch, or None. A multi-outlet strip (HS300) can put every outlet's switch
+    and meter on one device: the meter whose entity id starts with the switch's own is its one; a single-switch device
+    uses its meter. The strip's own switch is skipped (None) when its outlets have switches: it is on whenever one
+    outlet is, so it would repeat that outlet's finding (2026-10-10: 'Power Strip_7A93' + 'Power Strip_7A93 Plug 2')."""
+    obj = eid.split(".", 1)[1]
+    if any(o != eid and o.split(".", 1)[1].startswith(obj + "_") for o in dev_switches):
+        return None
+    own = [m for m in meters if m[0].split(".", 1)[1].startswith(obj + "_")]
+    if own:
+        return min(own, key=lambda m: len(m[0]))
+    return meters[0] if len(dev_switches) == 1 else None
 
 
 def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, max_w=0.5, exceptions=()):
@@ -514,20 +528,25 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
     memory = {} if memory is None else memory
     meters = _power_sensors(states, entity_registry)
     by_id = {s.get("entity_id"): s for s in states}
+    switches = [e for e in entity_registry
+                if e.get("entity_id", "").startswith("switch.") and e.get("device_id") in meters
+                and not e.get("disabled_by") and not e.get("entity_category") and e["entity_id"] in by_id]
+    by_dev = {}
+    for e in switches:
+        by_dev.setdefault(e["device_id"], []).append(e["entity_id"])
     watched, flagged, seen = 0, [], set()
-    for e in entity_registry:
-        eid, dev = e.get("entity_id", ""), e.get("device_id")
-        if not eid.startswith("switch.") or dev not in meters or e.get("disabled_by") or e.get("entity_category"):
+    for e in switches:
+        eid, dev = e["entity_id"], e["device_id"]
+        meter = _switch_meter(eid, by_dev[dev], meters[dev])
+        if meter is None:
             continue
-        st = by_id.get(eid)
-        if not st:
-            continue
+        st = by_id[eid]
         name = (st.get("attributes") or {}).get("friendly_name") or eid
         if name in exceptions or eid in exceptions:
             continue
         watched += 1
         seen.add(eid)
-        _, watts, zero_since = meters[dev]
+        _, watts, zero_since = meter
         if st.get("state") != "on" or watts > max_w:
             memory.pop(eid, None)
             continue
@@ -583,6 +602,10 @@ def check_integrations(entries, memory=None, exceptions=()):
         memory.pop(eid)
     ev = {"integrations": len(active), "failing": [{"name": n, "state": s} for n, s, _ in bad]}
     if not bad:
+        waiting = len(now_failing)    # first sighting only: say so instead of "all loaded" (it isn't)
+        if waiting:
+            return result(cid, PASS, f"{len(active) - waiting} of {len(active)} integrations loaded; {waiting} not "
+                          "loading, checked again next run", evidence=ev)
         return result(cid, PASS, f"all {len(active)} integrations loaded", evidence=ev)
     listed = ", ".join(f"{n} ({s.replace('_', ' ')})" for n, s, _ in sorted(bad)[:6])
     return result(cid, WARN, f"{len(bad)} integration(s) not working: {listed}", evidence=ev)
