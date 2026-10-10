@@ -485,9 +485,9 @@ def check_disk(host, warn_free_gb=5.0, fail_free_gb=1.5, warn_pct=85):
 
 
 def _power_sensors(states, entity_registry):
-    """{device_id: [(entity_id, watts, last_changed)]} — the device's power sensors (W), if it has any."""
+    """[(entity_id, watts, last_changed, device_id, unique_id)] — every power sensor (W) that sits on a device."""
     by_id = {s.get("entity_id"): s for s in states}
-    out = {}
+    out = []
     for e in entity_registry:
         st = by_id.get(e.get("entity_id"))
         if not st or not e.get("device_id") or e.get("disabled_by") or not e["entity_id"].startswith("sensor."):
@@ -499,8 +499,21 @@ def _power_sensors(states, entity_registry):
             watts = float(st.get("state"))
         except (TypeError, ValueError):
             continue
-        out.setdefault(e["device_id"], []).append((e["entity_id"], watts, parse_ts(st.get("last_changed"))))
+        out.append((e["entity_id"], watts, parse_ts(st.get("last_changed")), e["device_id"], e.get("unique_id")))
     return out
+
+
+def _uid_meter(uid, meters):
+    """The power sensor whose unique_id is `<switch unique_id>_...`, on whatever device: an HS300 puts each outlet's
+    switch on the strip's device but that outlet's meter on a child device of its own (2026-10-10: all 18 outlets in
+    the house, e.g. 'Kitchen Fan' = <uid> + '_current_power_w'). `_current_power_w` wins, else the shortest."""
+    if not isinstance(uid, str) or not uid:
+        return None
+    own = [m for m in meters if isinstance(m[4], str) and m[4].startswith(uid + "_")]
+    if not own:
+        return None
+    exact = [m for m in own if m[4] == uid + "_current_power_w"]
+    return exact[0] if exact else min(own, key=lambda m: len(m[4]))
 
 
 def _switch_meter(eid, dev_switches, meters):
@@ -526,18 +539,31 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
     if not isinstance(states, list) or not isinstance(entity_registry, list):
         return unknown(cid, "states / entity registry not readable")
     memory = {} if memory is None else memory
-    meters = _power_sensors(states, entity_registry)
+    all_meters = _power_sensors(states, entity_registry)
+    meters = {}
+    for m in all_meters:
+        meters.setdefault(m[3], []).append(m)
     by_id = {s.get("entity_id"): s for s in states}
     switches = [e for e in entity_registry
-                if e.get("entity_id", "").startswith("switch.") and e.get("device_id") in meters
+                if e.get("entity_id", "").startswith("switch.") and e.get("device_id")
                 and not e.get("disabled_by") and not e.get("entity_category") and e["entity_id"] in by_id]
+    by_uid = {e["entity_id"]: _uid_meter(e.get("unique_id"), all_meters) for e in switches}
+    switches = [e for e in switches if by_uid[e["entity_id"]] or e["device_id"] in meters]
     by_dev = {}
     for e in switches:
         by_dev.setdefault(e["device_id"], []).append(e["entity_id"])
+
+    def child_metered(eid, dev):   # an outlet whose meter sits on its own child device
+        return by_uid[eid] is not None and by_uid[eid][3] != dev
+
     watched, flagged, seen = 0, [], set()
     for e in switches:
         eid, dev = e["entity_id"], e["device_id"]
-        meter = _switch_meter(eid, by_dev[dev], meters[dev])
+        meter = by_uid[eid]
+        if not child_metered(eid, dev) and any(child_metered(o, dev) for o in by_dev[dev] if o != eid):
+            continue   # the strip's main switch, beside outlets that have meters of their own
+        if meter is None:
+            meter = _switch_meter(eid, by_dev[dev], meters.get(dev, []))
         if meter is None:
             continue
         st = by_id[eid]
@@ -546,7 +572,7 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
             continue
         watched += 1
         seen.add(eid)
-        _, watts, zero_since = meter
+        _, watts, zero_since = meter[:3]
         if st.get("state") != "on" or watts > max_w:
             memory.pop(eid, None)
             continue

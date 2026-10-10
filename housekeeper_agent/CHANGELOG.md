@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+- **Watson's status comes back straight after a Home Assistant restart.** Home Assistant forgets it on every restart,
+  so dashboards showed no Watson for up to an hour; now the App looks every few minutes and puts the last status back
+  (no extra check is run and nothing extra is sent).
+- **Switched on but drawing nothing** now sees every outlet of a TP-Link HS300 power strip, whose outlet meters
+  Home Assistant files under a separate device for each outlet (e.g. a balancing fan plugged into the strip).
+
 ## 0.1.8
 - **Switched on but drawing nothing** is more accurate on multi-outlet power strips: each outlet is measured by its
   own meter, and the strip's main switch is no longer listed alongside the outlet that keeps it on.

@@ -433,6 +433,50 @@ def test_zero_power_strip_outlets_on_one_device():
     assert r["evidence"]["switches_with_meter"] == 2
 
 
+
+def test_zero_power_strip_outlet_meters_on_child_devices():
+    """HS300 as seen live 2026-10-10 (all 18 outlets): each outlet's switch sits on the strip's device, but its meter
+    sits on a child device of its own; they pair by unique_id (<switch uid>_current_power_w), not by device."""
+    t0 = datetime(2026, 10, 9, 8, tzinfo=UTC)
+    strip, mac = "switch.tp_link_power_strip_7a93", "30:68:93:BE:7A:93"
+    names = ["Kitchen Fan", "Gym Fan", "Desk Lamp", "Printer", "Router", "Fridge"]
+    objs = [n.lower().replace(" ", "_") for n in names]
+    reg = [{"entity_id": strip, "device_id": "s", "unique_id": mac},
+           {"entity_id": "sensor.tp_link_power_strip_7a93_current_consumption", "device_id": "s",
+            "unique_id": f"{mac}_current_power_w"}]
+    for i, o in enumerate(objs):
+        reg += [{"entity_id": f"switch.{o}", "device_id": "s", "unique_id": f"X0{i}"},
+                {"entity_id": f"sensor.{o}_current_consumption", "device_id": f"c{i}",
+                 "unique_id": f"X0{i}_current_power_w"},
+                {"entity_id": f"sensor.{o}_today_s_consumption", "device_id": f"c{i}",
+                 "unique_id": f"X0{i}_today_energy_kwh"}]
+
+    def sw(eid, state, name):
+        return {"entity_id": eid, "state": state, "last_changed": t0.isoformat(), "attributes": {"friendly_name": name}}
+
+    def pw(eid, w):
+        return {"entity_id": eid, "state": str(w), "last_changed": t0.isoformat(),
+                "attributes": {"device_class": "power", "unit_of_measurement": "W"}}
+
+    watts = [12.0, 30.0, 0.0, 5.0, 8.0, 0.0]          # Desk Lamp is off at 0 W (fine); Fridge on at 0 W
+    states = ["on", "on", "off", "on", "on", "on"]
+    sts = [sw(strip, "on", "TP-LINK_Power Strip_7A93"), pw("sensor.tp_link_power_strip_7a93_current_consumption", 55.0)]
+    for o, n, w, st in zip(objs, names, watts, states, strict=True):
+        sts += [sw(f"switch.{o}", st, n), pw(f"sensor.{o}_current_consumption", w),
+                {"entity_id": f"sensor.{o}_today_s_consumption", "state": "0.4", "attributes": {}}]
+    r = checks.check_zero_power(sts, reg, t0 + timedelta(hours=20), {})
+    # exactly the idle outlet, by its own name; the strip switch (on, its total drawing) is not listed
+    assert r["status"] == "WARN" and r["reason"] == "1 switched on but drawing nothing: Fridge (20 h)"
+    assert r["evidence"]["switches_with_meter"] == 6
+    sts = [s for s in sts if s["entity_id"] != "sensor.fridge_current_consumption"] + [
+        pw("sensor.fridge_current_consumption", 90.0)]
+    assert checks.check_zero_power(sts, reg, t0 + timedelta(hours=20), {})["status"] == "PASS"
+    # everything on at 0 W, strip total too: the six outlets are listed, never the strip's main switch beside them
+    dead = [dict(s, state="on") if s["entity_id"].startswith("switch.") else
+            dict(s, state="0.0") if s["entity_id"].endswith("_current_consumption") else s for s in sts]
+    r = checks.check_zero_power(dead, reg, t0 + timedelta(hours=20), {})
+    assert sorted(z["name"] for z in r["evidence"]["zero_power"]) == sorted(names)
+
 def test_integrations_failing_twice_in_a_row():
     entries = [{"entry_id": "a", "domain": "wled", "title": "Entertainment Stand", "state": "setup_retry"},
                {"entry_id": "b", "domain": "tplink", "title": "Computer Plug", "state": "setup_error"},
