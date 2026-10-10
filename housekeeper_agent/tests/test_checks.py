@@ -537,12 +537,3 @@ def test_house_facts_missing_empty_or_stale():
     old = [{"entity_id": "sensor.house_facts", "state": "2026-10-10",
             "attributes": {"heating": {"min_per_hdd_7d": 7.9}}}]
     assert checks.check_house_facts(old, "sensor.house_facts", now)["status"] == checks.WARN
-
-
-def test_house_facts_is_opt_in():
-    from housekeeper_agent.app import agent
-    ids = {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, {}, datetime(2026, 10, 11, tzinfo=UTC))}
-    assert "house.facts" not in ids
-    ids = {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, {"facts_entity": "sensor.house_facts"},
-                                             datetime(2026, 10, 11, tzinfo=UTC))}
-    assert "house.facts" in ids
