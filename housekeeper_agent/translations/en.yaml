@@ -53,6 +53,11 @@ configuration:
   watch:
     name: Things to watch (old format)
     description: Older JSON format, kept for compatibility. Use "Things to watch" instead.
+  share_alarm_messages:
+    name: Send alarm messages
+    description: >-
+      Include the text of this home's alarms (e.g. "Sump Tripped - level high") in reports, so the daily note can
+      say what happened. When off, only which process alarmed, how badly, when and for how long is sent.
   facts_entity:
     name: House facts sensor (optional)
     description: >-

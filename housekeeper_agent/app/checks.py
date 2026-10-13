@@ -749,3 +749,245 @@ def check_house_facts(states, eid, now):
     if through and (now - through).days > FACTS_STALE_DAYS:
         return result(cid, WARN, f"house facts not updated since {ev['through']}", evidence=ev)
     return result(cid, PASS, f"house facts through {ev['through']}", evidence=ev)
+
+
+# ---------------------------------------------------------------- alarm events (DEC-10 processes)
+# Watson looks once an hour, so an alarm that fires and clears in between never shows in a snapshot (2026-10-12: a
+# 42 s HVAC Critical at 20:15, HVAC Fault <-> Normal three times 14:11-15:33). This check reads what happened instead:
+#   * states: `history/history_during_period` of every entity labelled `alarm_process` (the same set that rolls up
+#     into sensor.estate_alarm_status) -> each non-Normal episode with start, end, duration and worst tier;
+#   * words: the logbook lines script.estate_alarm_notify writes for every annunciation ("Alarm: <Process>",
+#     "<TIER> - <message>") -> the alarm's own message text. They are also a second witness: HA's history API has
+#     been seen to drop rows (LL-24), so an annunciation with no matching state change still becomes an episode
+#     (marked src "logbook").
+# The logbook is read incrementally (since the last good read, kept in /data/memory.json) so each run asks HA for
+# about an hour of it, not a whole day. Facts only (DEC-34): central decides what is worth telling anyone.
+
+ALARM_LABEL = "alarm_process"
+ALARM_TIERS = ("Warn", "Fault", "Critical", "Tripped")       # rising severity, as sensor.estate_alarm_status ranks
+LOG_TIERS = {"WARN": "Warn", "FAULT": "Fault", "CRITICAL": "Critical", "TRIP": "Tripped", "CLEAR": "Normal"}
+ALARM_WINDOW_H = 24
+ALARM_MAX_EPISODES = 80        # per card; the per-process totals always cover every episode
+ALARM_MSG_CHARS = 160
+ALARM_LOG_KEEP = 300           # logbook lines remembered house-side
+ALARM_MATCH_S = 120            # a logbook line belongs to an episode if it is within this of its start/end
+
+
+def alarm_process_key(name):
+    """The id script.estate_alarm_notify derives from a process name: 'Sauna Heat' -> 'sauna_heat'."""
+    return str(name).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def alarm_entities(entity_registry):
+    """{entity_id: process key} for entities carrying the `alarm_process` label; the key is the object id without
+    `_status` (input_select.sauna_heat_status -> sauna_heat), which is what the notify script makes of 'Sauna Heat'.
+    None when the registry is unreadable or has no `labels` field at all (a format change, not "no alarms")."""
+    if not isinstance(entity_registry, list):
+        return None
+    regs = [e for e in entity_registry if isinstance(e, dict)]
+    if regs and not any("labels" in e for e in regs):
+        return None
+    out = {}
+    for e in regs:
+        labels = e.get("labels") if isinstance(e.get("labels"), list) else []
+        if ALARM_LABEL in labels and not e.get("disabled_by") and isinstance(e.get("entity_id"), str):
+            out[e["entity_id"]] = e["entity_id"].split(".", 1)[-1].removesuffix("_status")
+    return out
+
+
+def alarm_log_since(memory, now):
+    """Where the next logbook read starts: just before the last good read, never more than the window back."""
+    floor = now - timedelta(hours=ALARM_WINDOW_H)
+    try:
+        last = parse_ts(((memory or {}).get("alarm_log") or {}).get("to"))
+    except (ValueError, TypeError, AttributeError):
+        last = None
+    return max(floor, last - timedelta(minutes=5)) if last else floor
+
+
+def alarm_log_entries(logbook, keys):
+    """'Alarm: <Process>' logbook lines for labelled processes -> [[iso, key, tier, text]]. Other logbook lines
+    (and alarm-style lines of processes that don't roll up, e.g. air-quality advisories) are ignored."""
+    out = []
+    for e in logbook if isinstance(logbook, list) else []:
+        if not isinstance(e, dict) or not str(e.get("name") or "").startswith("Alarm: "):
+            continue
+        key = alarm_process_key(str(e["name"])[len("Alarm: "):])
+        word, _, text = str(e.get("message") or "").partition(" - ")
+        tier = LOG_TIERS.get(word.strip().upper())
+        try:
+            when = parse_ts(e.get("when"))
+        except (ValueError, TypeError, OverflowError):
+            when = None
+        if key in keys and tier and when:
+            out.append([when.isoformat(), key, tier, text.strip()[:ALARM_MSG_CHARS]])
+    return out
+
+
+def remember_alarm_log(memory, new, read_to, now):
+    """Merge newly read lines into memory (deduplicated, last window + 1 h, capped). `read_to` moves on only after a
+    good read, so a failed read is retried from the same point next run. Damaged memory is dropped, never fatal."""
+    cutoff = now - timedelta(hours=ALARM_WINDOW_H + 1)
+    kept = {}
+    for x in [*(memory.get("entries") if isinstance(memory.get("entries"), list) else []), *(new or [])]:
+        if not (isinstance(x, list) and len(x) == 4 and all(isinstance(v, str) for v in x)):
+            continue
+        try:
+            when = parse_ts(x[0])
+        except ValueError:
+            continue
+        if when and when >= cutoff:
+            kept[(when.isoformat(), x[1], x[2])] = [when.isoformat(), x[1], x[2], x[3]]
+    entries = [kept[k] for k in sorted(kept)][-ALARM_LOG_KEEP:]
+    memory["entries"] = entries
+    if read_to:
+        memory["to"] = read_to
+    return entries
+
+
+def _state_points(rows):
+    """History rows ({"s", "lu"/"lc"}) -> sorted [(time, state)]. Compressed rows give last_changed as `lc` only when
+    it differs from `lu`; minimal rows carry the change time in `lu`."""
+    pts = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            t = parse_ts(r.get("lc") or r.get("lu"))
+        except (ValueError, TypeError, OverflowError):
+            t = None
+        if t:
+            pts.append((t, r.get("s")))
+    return sorted(pts, key=lambda p: p[0])
+
+
+def _history_episodes(rows, now):
+    """Contiguous non-Normal runs. Tier changes inside a run (Fault -> Critical -> Warn) stay one episode whose tier is
+    the worst; seconds per tier are kept. `unknown` / `unavailable` (HA restarting, a reload) neither start nor end
+    an episode."""
+    eps, cur = [], None
+    for t, s in _state_points(rows):
+        if s == "Normal":
+            if cur:
+                cur["tiers"][cur["at"]] = cur["tiers"].get(cur["at"], 0) + (t - cur["since"]).total_seconds()
+                cur["end"] = t
+                eps.append(cur)
+                cur = None
+        elif s in ALARM_TIERS:
+            if cur is None:
+                cur = {"start": t, "end": None, "at": s, "since": t, "tiers": {}}
+            elif s != cur["at"]:
+                cur["tiers"][cur["at"]] = cur["tiers"].get(cur["at"], 0) + (t - cur["since"]).total_seconds()
+                cur["at"], cur["since"] = s, t
+    if cur:
+        cur["tiers"][cur["at"]] = cur["tiers"].get(cur["at"], 0) + (now - cur["since"]).total_seconds()
+        eps.append(cur)
+    return eps
+
+
+def _worst(tiers):
+    return max(tiers, key=ALARM_TIERS.index)
+
+
+def _covered(when, eps, now):
+    pad = timedelta(seconds=ALARM_MATCH_S)
+    return any(e["start"] - pad <= when <= (e["end"] or now) + pad for e in eps)
+
+
+def _logbook_episodes(lines, hist, now):
+    """Annunciations with no matching state change in history (LL-24: history can drop rows). Consecutive lines until
+    a CLEAR are one episode (Criticals re-push every 15 min); with no CLEAR the end is unknown (None, not 'active')."""
+    eps, cur = [], None
+    for when, tier, _ in lines:
+        if tier == "Normal":
+            if cur:
+                cur["end"] = when
+                eps.append(cur)
+                cur = None
+            continue
+        if _covered(when, hist, now):
+            continue
+        if cur is None:
+            cur = {"start": when, "end": None, "tiers": {}, "src": "logbook"}
+        cur["tiers"][tier] = 0
+    if cur:
+        eps.append(cur)
+    return eps
+
+
+def _message(ep, lines, now):
+    """The alarm's own words for an episode: the first logbook line of its worst tier inside it, else the first."""
+    pad = timedelta(seconds=ALARM_MATCH_S)
+    inside = [(t, x) for w, t, x in lines if t != "Normal" and ep["start"] - pad <= w <= (ep["end"] or now)]
+    best = [x for t, x in inside if t == ep["tier"]] or [x for _, x in inside]
+    return best[0] if best else None
+
+
+def _alarm_episode_out(e, now, window_start):
+    timed = e["end"] is not None or e["src"] == "history"
+    return {"process": e["process"], "tier": e["tier"], "start": e["start"].isoformat(),
+            "end": e["end"] and e["end"].isoformat(),
+            "s": round(((e["end"] or now) - e["start"]).total_seconds()) if timed else None,
+            "tiers": {t: round(v) for t, v in e["tiers"].items()} if e["src"] == "history" else {},
+            "msg": e["msg"], "src": e["src"], "before_window": e["start"] < window_start}
+
+
+def check_alarm_events(states, entities, history, logbook, now, memory=None, share_messages=True):
+    """Alarm episodes over the last ALARM_WINDOW_H: per process tier, start, end (None = still on), seconds and the
+    alarm's message. PASS whenever readable: the current alarm state has its own check (watch); this is the record of
+    what happened, and central decides what is worth mentioning. evidence["v"] versions the shape for central.
+    `logbook` = {"events": [...], "to": iso end of the read} or None when the read failed (messages missing, the
+    states are still reported). share_messages=False (option share_alarm_messages) keeps the alarm text at home:
+    process, tier and timings are still sent, msg is None and evidence["messages"] = "withheld"."""
+    cid = "alarms.events"
+    memory = {} if memory is None else memory
+    if entities is None:
+        return unknown(cid, "entity registry unreadable or has no labels")
+    window_start = now - timedelta(hours=ALARM_WINDOW_H)
+    ev = {"v": 1, "window_h": ALARM_WINDOW_H, "from": window_start.isoformat(), "to": now.isoformat(),
+          "processes": {}, "episodes": []}
+    if not entities:
+        return result(cid, PASS, f"no entities labelled {ALARM_LABEL}", evidence=ev)
+    if not isinstance(history, dict):
+        return unknown(cid, "history/history_during_period returned no dict")
+    read_ok = isinstance(logbook, dict) and isinstance(logbook.get("events"), list)
+    new = alarm_log_entries(logbook["events"], set(entities.values())) if read_ok else []
+    remembered = remember_alarm_log(memory, new, logbook.get("to") if read_ok else None, now)
+    names = {}
+    for s in states if isinstance(states, list) else []:
+        if s.get("entity_id") in entities:
+            fn = str((s.get("attributes") or {}).get("friendly_name") or "")
+            names[entities[s["entity_id"]]] = fn.removesuffix(" Status").removesuffix(" status")[:40]
+    all_eps = []
+    for eid, key in sorted(entities.items()):
+        lines = [(parse_ts(w), t, x) for w, k, t, x in remembered if k == key]
+        every = [dict(e, src="history") for e in _history_episodes(history.get(eid), now)]
+        hist = [e for e in every if (e["end"] or now) >= window_start]
+        eps = hist + [e for e in _logbook_episodes(lines, every, now) if e["start"] >= window_start]
+        name = names.get(key) or key.replace("_", " ").title()
+        for e in eps:
+            e["tier"], e["process"] = _worst(e["tiers"]), name
+            e["msg"] = _message(e, lines, now) if share_messages else None
+        all_eps += eps
+        if eps:
+            timed = [e for e in eps if e["src"] == "history"]
+            active = [e["tier"] for e in timed if e["end"] is None]
+            ev["processes"][name] = {
+                "count": len(eps), "worst": _worst([e["tier"] for e in eps]),
+                "not_normal_s": round(sum(((e["end"] or now) - max(e["start"], window_start)).total_seconds()
+                                          for e in timed)),
+                "active": active[0] if active else None}
+    # More than fit: keep the most severe, then the most recent; sent oldest first.
+    picked = sorted(all_eps, key=lambda e: (-ALARM_TIERS.index(e["tier"]), -e["start"].timestamp()))
+    picked = sorted(picked[:ALARM_MAX_EPISODES], key=lambda e: e["start"])
+    ev["episodes"] = [_alarm_episode_out(e, now, window_start) for e in picked]
+    ev["truncated"] = len(all_eps) - len(picked)
+    ev["messages"] = ("read" if read_ok else "unread") if share_messages else "withheld"
+    note = "" if read_ok else "; alarm messages not read this run"
+    if not all_eps:
+        return result(cid, PASS, f"no alarms in {ALARM_WINDOW_H} h ({len(entities)} processes watched){note}",
+                      evidence=ev)
+    ranked = sorted(ev["processes"].items(), key=lambda kv: -ALARM_TIERS.index(kv[1]["worst"]))
+    listed = ", ".join(f"{n} {p['count']}x (worst {p['worst']}{', on now' if p['active'] else ''})" for n, p in ranked)
+    return result(cid, PASS, f"{len(all_eps)} alarm episode(s) in {ALARM_WINDOW_H} h: {listed}{note}"[:500],
+                  evidence=ev)

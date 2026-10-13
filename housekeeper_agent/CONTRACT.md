@@ -26,4 +26,8 @@ Review each HA release's "Backward-incompatible changes" against this list.
 | 18 | Supervisor | `GET /host/info` (default role: `/…/info` is readable) | `data.disk_total`, `data.disk_free` (GB) | system.disk |
 | 19 | Conventions | power sensor = `device_class: power` + unit `W`, on the same device as a `switch.*`, or (HS300 outlets: meter on a child device) registry `unique_id` = the switch's `unique_id` + `_…` (`_current_power_w`) | | devices.zero_power |
 | 22 | Core REST | `GET /api/states/sensor.housekeeper_status` every 3 min between runs; 404 / `unknown` = HA restarted and dropped it → re-`POST` the last payload (row 9) | `state` | house status |
+| 23 | Core WS | `config/entity_registry/list` | `labels` (list of label ids); entities labelled `alarm_process` (no `labels` field at all = UNKNOWN) | alarms.events |
+| 24 | Core WS | `history/history_during_period` (24 h, `minimal_response`, `no_attributes`) for the `alarm_process` entities | `{entity_id: [{"s", "lu", "lc"?}]}`; states `Normal` / `Warn` / `Fault` / `Critical` / `Tripped` | alarms.events |
+| 25 | Core WS | `logbook/get_events` (`start_time` = last good read, `end_time` = now) | `name`, `message`, `when` (epoch or ISO) | alarms.events (messages; second witness, LL-24) |
+| 26 | Conventions | `script.estate_alarm_notify` logs name `Alarm: <Process>`, message `<WARN\|FAULT\|CRITICAL\|TRIP\|CLEAR> - <text>`; process key = name lower-cased, spaces/hyphens -> `_` = the `<key>_status` entity | | alarms.events |
 | 17 | Conventions | `automation.*` state `on`/`off`/`unavailable`, attribute `last_triggered` (ISO or null), `friendly_name` | | automations.stopped |

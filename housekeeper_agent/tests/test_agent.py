@@ -20,7 +20,7 @@ def test_one_broken_check_does_not_kill_the_card(monkeypatch):
     monkeypatch.setattr(checks, "check_batteries", boom)
     out = agent.run_checks({"errors": {}, "states": []}, {"watch": []}, NOW)
     by_id = {c["id"]: c["status"] for c in out}
-    assert by_id["devices.battery"] == "UNKNOWN" and len(out) == 15   # 0.1.7: + ha.integrations, ha.log_errors
+    assert by_id["devices.battery"] == "UNKNOWN" and len(out) == 16   # + alarms.events
 
 
 def test_bad_watch_entries_become_unknown_not_crash():
