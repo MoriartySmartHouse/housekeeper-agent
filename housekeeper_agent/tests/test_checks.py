@@ -269,6 +269,19 @@ def test_flapping_counts_drops_not_samples():
     assert checks.check_flapping({"light.lamp": [{"s": "on"}]}, cands)["status"] == "PASS"
 
 
+def test_flapping_ignores_reload_blips_but_counts_real_drops():
+    cands = checks.flap_candidates(REG, DEVS)
+    t = 1791900000.0
+    blip = lambda at: [{"s": "unavailable", "lu": at}, {"s": "off", "lu": at + 0.4}]  # noqa: E731
+    rows = [{"s": "off", "lu": t}, *blip(t + 100), *blip(t + 200), *blip(t + 300)]
+    assert checks.check_flapping({"light.lamp": rows}, cands)["status"] == "PASS"    # 3 restarts, 0 drops
+    rows += [{"s": "unavailable", "lu": t + 1000}, {"s": "off", "lu": t + 1960},        # 16 min: real
+             {"s": "unavailable", "lu": t + 3000}, {"s": "off", "lu": t + 3961},
+             {"s": "unavailable", "lu": t + 5000}]                                     # still down: real
+    r = checks.check_flapping({"light.lamp": rows}, cands)
+    assert r["evidence"]["flapping"] == [{"name": "Lamp", "drops_24h": 3}]
+
+
 def test_flapping_unreadable_is_unknown_and_starting_unavailable_is_not_a_drop():
     cands = checks.flap_candidates(REG, DEVS)
     assert checks.check_flapping(None, cands)["status"] == "UNKNOWN"

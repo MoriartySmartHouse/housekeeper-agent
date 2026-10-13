@@ -300,10 +300,23 @@ def flap_candidates(entity_registry, device_registry):
     return {eid: names.get(dev) or eid for dev, eid in picked.items()}
 
 
-def check_flapping(history, candidates, min_drops=3):
+FLAP_MIN_DROP_S = 60
+
+
+def _row_time(r):
+    try:
+        return parse_ts(r.get("lc") or r.get("lu"))
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def check_flapping(history, candidates, min_drops=3, min_drop_s=FLAP_MIN_DROP_S):
     """Devices that dropped off (-> unavailable) `min_drops` or more times in the window — e.g. a WiFi plug that
     keeps falling off the network. Each drop is short, so hourly snapshots never see it; history does.
-    history = {entity_id: [{"s": state, ...}, ...]} (HA's compressed history/history_during_period)."""
+    history = {entity_id: [{"s": state, ...}, ...]} (HA's compressed history/history_during_period).
+    A drop shorter than `min_drop_s` is not counted: every HA restart or integration reload marks entities
+    unavailable for under a second (2026-10-13: 9 of a Zigbee bulb's 13 'drops' in a week were reload blips; its
+    real drops lasted 16 min and more). Rows without timestamps are counted as before."""
     cid = "devices.flapping"
     if not candidates:
         return result(cid, PASS, "no switch/light-type devices to watch", evidence={"devices_checked": 0})
@@ -314,10 +327,14 @@ def check_flapping(history, candidates, min_drops=3):
         if eid not in candidates or not isinstance(rows, list):
             continue
         drops, prev = 0, None
-        for r in rows:
-            s = r.get("s") if isinstance(r, dict) else None
+        rows = [r for r in rows if isinstance(r, dict)]
+        for i, r in enumerate(rows):
+            s = r.get("s")
             if s == "unavailable" and prev not in (None, "unavailable"):
-                drops += 1
+                back = next((x for x in rows[i + 1:] if x.get("s") != "unavailable"), None)
+                t0, t1 = _row_time(r), _row_time(back) if back else None
+                if not (t0 and t1 and (t1 - t0).total_seconds() < min_drop_s):
+                    drops += 1                 # long enough, still down, or no timestamps to tell
             prev = s
         if drops >= min_drops:
             flappy.append((candidates[eid], drops))
