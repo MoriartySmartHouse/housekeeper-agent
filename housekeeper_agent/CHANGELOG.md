@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.11
 - **Alarms between checks are no longer missed.** Watson checks once an hour, so an alarm that went off and
   cleared in between never showed. If your home has alarm processes (entities labelled `alarm_process`), the App now
   reads the last 24 h of their history and the alarm lines in the logbook, and sends each alarm: which process, how
