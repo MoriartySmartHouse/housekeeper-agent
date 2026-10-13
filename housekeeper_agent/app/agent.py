@@ -213,9 +213,31 @@ def gather(token):
             data["history_24h"] = fetch("history", lambda: core.call("history/history_during_period", start_time=start,
                                                                      entity_ids=ids, minimal_response=True,
                                                                      no_attributes=True), errors)
+        gather_alarms(core, data, errors)
         return data, core.ha_version
     finally:
         core.close()
+
+
+def gather_alarms(core, data, errors):
+    """Alarm events (DEC-10 processes): 24 h of state history for the entities labelled `alarm_process`, and the
+    logbook since the last good read (the 'Alarm: <Process>' lines carry each alarm's message). Read-only; skipped
+    entirely in a home with no labelled processes. A failed logbook read leaves `alarm_logbook` None (messages are
+    then missing this run, the states still count)."""
+    data["alarm_entities"] = checks.alarm_entities(data.get("entity_registry"))
+    if not data["alarm_entities"]:
+        return
+    now = datetime.now(UTC)
+    start = (now - timedelta(hours=checks.ALARM_WINDOW_H)).isoformat()
+    ids = sorted(data["alarm_entities"])
+    data["alarm_history"] = fetch("alarm_history", lambda: core.call("history/history_during_period",
+                                                                     start_time=start, entity_ids=ids,
+                                                                     minimal_response=True, no_attributes=True),
+                                  errors)
+    since = checks.alarm_log_since(load_memory(), now).isoformat()
+    events = fetch("logbook", lambda: core.call("logbook/get_events", start_time=since, end_time=now.isoformat()),
+                   errors)
+    data["alarm_logbook"] = {"events": events, "to": now.isoformat()} if isinstance(events, list) else None
 
 
 def run_checks(data, opts, now, memory=None):
@@ -249,6 +271,8 @@ def run_checks(data, opts, now, memory=None):
              threshold=opts.get("log_error_threshold", 10)),
         safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
              hours_needed=opts.get("zero_power_hours", 6), exceptions=opts.get("zero_power_exceptions", [])),
+        safe("alarms.events", checks.check_alarm_events, s, data.get("alarm_entities", checks.alarm_entities(ents)),
+             data.get("alarm_history"), data.get("alarm_logbook"), now, memory.setdefault("alarm_log", {})),
     ]
     if opts.get("facts_entity"):
         out.append(safe("house.facts", checks.check_house_facts, s, opts["facts_entity"], now))
