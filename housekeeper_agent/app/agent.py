@@ -214,6 +214,7 @@ def gather(token):
                                                                      entity_ids=ids, minimal_response=True,
                                                                      no_attributes=True), errors)
         gather_alarms(core, data, errors)
+        gather_selfheal(core, data, errors)
         return data, core.ha_version
     finally:
         core.close()
@@ -238,6 +239,20 @@ def gather_alarms(core, data, errors):
     events = fetch("logbook", lambda: core.call("logbook/get_events", start_time=since, end_time=now.isoformat()),
                    errors)
     data["alarm_logbook"] = {"events": events, "to": now.isoformat()} if isinstance(events, list) else None
+
+
+def gather_selfheal(core, data, errors):
+    """Self-heal logbook lines (blueprints/automation/housekeeper). Reuses the alarm read when it ran; otherwise one
+    incremental logbook read of its own, since the last good one (kept in memory, like the alarm lines)."""
+    if data.get("alarm_logbook") is not None:
+        data["selfheal_logbook"] = data["alarm_logbook"]
+        return
+    now = datetime.now(UTC)
+    mem = (load_memory().get("selfheal_log") or {})
+    since = checks.alarm_log_since({"alarm_log": mem}, now).isoformat()
+    events = fetch("logbook_selfheal", lambda: core.call("logbook/get_events", start_time=since,
+                                                         end_time=now.isoformat()), errors)
+    data["selfheal_logbook"] = {"events": events, "to": now.isoformat()} if isinstance(events, list) else None
 
 
 def run_checks(data, opts, now, memory=None):
@@ -274,6 +289,8 @@ def run_checks(data, opts, now, memory=None):
         safe("alarms.events", checks.check_alarm_events, s, data.get("alarm_entities", checks.alarm_entities(ents)),
              data.get("alarm_history"), data.get("alarm_logbook"), now, memory.setdefault("alarm_log", {}),
              share_messages=opts.get("share_alarm_messages", True)),
+        safe("selfheal.events", checks.check_selfheal_events, data.get("selfheal_logbook"), now,
+             memory.setdefault("selfheal_log", {})),
     ]
     if opts.get("facts_entity"):
         out.append(safe("house.facts", checks.check_house_facts, s, opts["facts_entity"], now))

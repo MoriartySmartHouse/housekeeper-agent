@@ -537,3 +537,37 @@ def test_house_facts_missing_empty_or_stale():
     old = [{"entity_id": "sensor.house_facts", "state": "2026-10-10",
             "attributes": {"heating": {"min_per_hdd_7d": 7.9}}}]
     assert checks.check_house_facts(old, "sensor.house_facts", now)["status"] == checks.WARN
+
+
+def _heal(when, msg, name="Watson self-heal"):
+    return {"when": when, "name": name, "message": msg}
+
+
+def test_selfheal_lines_parsed_and_others_ignored():
+    log = [_heal("2026-10-13T09:12:00+00:00", "Kitchen3: fixed - reloaded its integration"),
+           _heal("2026-10-13T09:20:00+00:00", "Zigbee2MQTT: still down - restarted the add-on"),
+           _heal("2026-10-13T09:30:00+00:00", "Nonsense line"),
+           _heal("2026-10-13T09:31:00+00:00", "X: maybe - ?"),
+           {"when": "2026-10-13T09:40:00+00:00", "name": "Alarm: Sump", "message": "TRIP - water"}]
+    assert checks.selfheal_log_entries(log) == [
+        ["2026-10-13T09:12:00+00:00", "Kitchen3", "fixed", "reloaded its integration"],
+        ["2026-10-13T09:20:00+00:00", "Zigbee2MQTT", "still down", "restarted the add-on"]]
+
+
+def test_selfheal_check_reports_fixes_warns_on_failures_and_remembers():
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    mem = {}
+    ok = {"events": [_heal("2026-10-13T09:12:00+00:00", "Kitchen3: fixed - reloaded its integration")],
+          "to": now.isoformat()}
+    r = checks.check_selfheal_events(ok, now, mem)
+    assert r["status"] == "PASS" and "Watson fixed 1" in r["reason"] and "Kitchen3" in r["reason"]
+    assert mem["to"] == now.isoformat() and len(mem["entries"]) == 1
+    bad = {"events": [_heal("2026-10-13T11:00:00+00:00", "Bed strip: still down - reloaded its integration")],
+           "to": now.isoformat()}
+    r = checks.check_selfheal_events(bad, now, mem)
+    assert r["status"] == "WARN" and "could not fix: Bed strip" in r["reason"] and "fixed: Kitchen3" in r["reason"]
+    r = checks.check_selfheal_events(None, now, mem)                    # failed read: memory still reported
+    assert r["status"] == "WARN" and r["evidence"]["read"] == "unread"
+    later = now + timedelta(hours=26)
+    assert checks.check_selfheal_events({"events": [], "to": later.isoformat()}, later, mem)["status"] == "PASS"
+    assert mem["entries"] == []                                         # older than 24 h: forgotten

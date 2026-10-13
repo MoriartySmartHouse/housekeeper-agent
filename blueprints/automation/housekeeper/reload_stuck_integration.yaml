@@ -1,0 +1,66 @@
+blueprint:
+  name: "Watson self-heal: reload an integration stuck retrying"
+  description: >-
+    When an integration is stuck **retrying setup** (Settings > Devices shows it failing), reload it - once per
+    cooldown - and record whether it came back. Watson (the Housekeeper App) reads that record for the morning
+    summary.
+
+
+    Safe by design: a reload never switches anything. Whole-mesh integrations (MQTT / Zigbee2MQTT, ZHA, Z-Wave)
+    are refused - use "restart an App when it is down" for those.
+  domain: automation
+  source_url: https://github.com/MoriartySmartHouse/housekeeper-agent/blob/main/blueprints/automation/housekeeper/reload_stuck_integration.yaml
+  input:
+    entry:
+      name: Integration entry
+      selector:
+        config_entry: {}
+    cooldown_hours:
+      name: At most one try every
+      default: 6
+      selector:
+        number: {min: 1, max: 48, unit_of_measurement: h}
+    check_after:
+      name: Check the result after
+      default: 90
+      selector:
+        number: {min: 15, max: 600, unit_of_measurement: s}
+
+mode: single
+max_exceeded: silent
+
+variables:
+  entry: !input entry
+  cooldown_h: !input cooldown_hours
+  mesh: [mqtt, zha, zwave_js, deconz, matter]
+
+triggers:
+  - trigger: time_pattern
+    minutes: "/15"
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ config_entry_attr(entry, 'state') | string in ['setup_retry', 'setup_error',
+                                                        'ConfigEntryState.SETUP_RETRY', 'ConfigEntryState.SETUP_ERROR']
+         and config_entry_attr(entry, 'domain') not in mesh
+         and not config_entry_attr(entry, 'disabled_by') }}
+  - condition: template
+    value_template: >-
+      {{ this.attributes.last_triggered is none
+         or (now() - this.attributes.last_triggered).total_seconds() > cooldown_h * 3600 }}
+
+actions:
+  - action: homeassistant.reload_config_entry
+    continue_on_error: true
+    data:
+      entry_id: "{{ entry }}"
+  - delay:
+      seconds: !input check_after
+  - action: logbook.log
+    data:
+      name: Watson self-heal
+      message: >-
+        {{ (config_entry_attr(entry, 'title') or entry) | replace(': ', ' ') }}:
+        {{ 'fixed' if config_entry_attr(entry, 'state') | string in ['loaded', 'ConfigEntryState.LOADED']
+           else 'still down' }} - reloaded the integration

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+- **Watson reports what your self-heals did.** New blueprints (in this repository, `blueprints/automation/housekeeper/`)
+  let Home Assistant fix the safe, common problems itself: reload a device that dropped off, reload an integration
+  stuck retrying, restart an App (e.g. Zigbee2MQTT) when it stops working. Each tries once per cooldown and writes one
+  line in the logbook; the App reads those lines (new check *Self-heals*), so the morning summary says "Watson fixed
+  it" instead of asking you - or "Watson already tried" when it did not help. The App itself still changes nothing.
+- **Dropping off** no longer counts the blips every Home Assistant restart or reload causes (under 60 s).
+
 ## 0.1.11
 - **Alarms between checks are no longer missed.** Watson checks once an hour, so an alarm that went off and
   cleared in between never showed. If your home has alarm processes (entities labelled `alarm_process`), the App now
