@@ -272,7 +272,8 @@ def run_checks(data, opts, now, memory=None):
         safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
              hours_needed=opts.get("zero_power_hours", 6), exceptions=opts.get("zero_power_exceptions", [])),
         safe("alarms.events", checks.check_alarm_events, s, data.get("alarm_entities", checks.alarm_entities(ents)),
-             data.get("alarm_history"), data.get("alarm_logbook"), now, memory.setdefault("alarm_log", {})),
+             data.get("alarm_history"), data.get("alarm_logbook"), now, memory.setdefault("alarm_log", {}),
+             share_messages=opts.get("share_alarm_messages", True)),
     ]
     if opts.get("facts_entity"):
         out.append(safe("house.facts", checks.check_house_facts, s, opts["facts_entity"], now))

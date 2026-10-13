@@ -19,7 +19,8 @@ status when it restarts, so between hourly checks the App looks every few minute
   how often they usually run; the names of switches that are on but drawing no power; free disk space; the
   names of integrations that are not working; the number of log errors per integration (never the log text); if your home has
   alarm processes (entities labelled `alarm_process`), each alarm of the last 24 h: the process name, level, start,
-  end and the alarm's own message (the text your alarm script writes to the logbook, shortened to 160 characters); and the count — not the text — of your notifications. **Never** camera images,
+  end and the alarm's own message (the text your alarm script writes to the logbook, shortened to 160 characters;
+  turn off *Send alarm messages* to keep that text at home); and the count — not the text — of your notifications. **Never** camera images,
   locations, history, or your passwords. (To spot drop-offs the App reads the last 24 h of on/off history of
   plugs, lights and switches; to spot stopped automations it remembers their recent run times. Both stay in your
   home.)

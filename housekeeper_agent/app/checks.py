@@ -932,12 +932,13 @@ def _alarm_episode_out(e, now, window_start):
             "msg": e["msg"], "src": e["src"], "before_window": e["start"] < window_start}
 
 
-def check_alarm_events(states, entities, history, logbook, now, memory=None):
+def check_alarm_events(states, entities, history, logbook, now, memory=None, share_messages=True):
     """Alarm episodes over the last ALARM_WINDOW_H: per process tier, start, end (None = still on), seconds and the
     alarm's message. PASS whenever readable: the current alarm state has its own check (watch); this is the record of
     what happened, and central decides what is worth mentioning. evidence["v"] versions the shape for central.
     `logbook` = {"events": [...], "to": iso end of the read} or None when the read failed (messages missing, the
-    states are still reported)."""
+    states are still reported). share_messages=False (option share_alarm_messages) keeps the alarm text at home:
+    process, tier and timings are still sent, msg is None and evidence["messages"] = "withheld"."""
     cid = "alarms.events"
     memory = {} if memory is None else memory
     if entities is None:
@@ -966,7 +967,7 @@ def check_alarm_events(states, entities, history, logbook, now, memory=None):
         name = names.get(key) or key.replace("_", " ").title()
         for e in eps:
             e["tier"], e["process"] = _worst(e["tiers"]), name
-            e["msg"] = _message(e, lines, now)
+            e["msg"] = _message(e, lines, now) if share_messages else None
         all_eps += eps
         if eps:
             timed = [e for e in eps if e["src"] == "history"]
@@ -981,7 +982,7 @@ def check_alarm_events(states, entities, history, logbook, now, memory=None):
     picked = sorted(picked[:ALARM_MAX_EPISODES], key=lambda e: e["start"])
     ev["episodes"] = [_alarm_episode_out(e, now, window_start) for e in picked]
     ev["truncated"] = len(all_eps) - len(picked)
-    ev["messages"] = "read" if read_ok else "unread"
+    ev["messages"] = ("read" if read_ok else "unread") if share_messages else "withheld"
     note = "" if read_ok else "; alarm messages not read this run"
     if not all_eps:
         return result(cid, PASS, f"no alarms in {ALARM_WINDOW_H} h ({len(entities)} processes watched){note}",

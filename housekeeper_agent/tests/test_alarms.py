@@ -208,3 +208,15 @@ def test_card_with_alarms_stays_small():
     for i in range(400):
         log.append({"name": "Alarm: HVAC", "message": "FAULT - " + "x" * 400, "when": NOW.timestamp() - i * 100})
     assert len(json.dumps(run(log=log))) < 40_000
+
+
+def test_share_messages_off_keeps_alarm_text_at_home():
+    """share_alarm_messages: false - episodes, tiers and timings still go to central, the alarm text does not."""
+    h, lg = fixture()
+    on = run()
+    off = checks.check_alarm_events(STATES, checks.alarm_entities(REG), h, {"events": lg, "to": NOW.isoformat()}, NOW,
+                                    {}, share_messages=False)
+    assert [e["tier"] for e in off["evidence"]["episodes"]] == [e["tier"] for e in on["evidence"]["episodes"]]
+    assert any(e["msg"] for e in on["evidence"]["episodes"])
+    assert all(e["msg"] is None for e in off["evidence"]["episodes"])
+    assert off["evidence"]["messages"] == "withheld"

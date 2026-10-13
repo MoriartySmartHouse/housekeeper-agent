@@ -6,6 +6,8 @@
   reads the last 24 h of their history and the alarm lines in the logbook, and sends each alarm: which process, how
   serious, when it started and ended, and the alarm's own message. The morning summary and the household note use
   it. Read-only (history + logbook); homes without alarm processes send nothing new.
+- **New setting *Send alarm messages*** (on by default): turn it off to keep the alarm text at home; which process
+  alarmed, how badly, when and for how long is still sent.
 
 ## 0.1.10
 - **Weekly note can say what's unusual for this home.** New optional setting *House facts sensor*: if your home
