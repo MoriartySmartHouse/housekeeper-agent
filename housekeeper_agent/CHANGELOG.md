@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.14
+- **Dropping off** no longer counts the blips every Home Assistant restart or reload causes (under 60 s). (Listed
+  under 0.1.13 by mistake; it ships here.)
+- **A Rarely used label for automations.** Put it on an automation that may sit quiet for weeks (a guest-room
+  button, a seasonal one) and Watson never reports it as "stopped firing". Unlike Maintenance it doesn't expire.
+- **Log errors say which device.** "tplink 122x" now reads "tplink 122x (from .117, .93)" or names the bulb, so you
+  know what to look at. Only the device's name or the last part of its network address is sent, never the log text.
+- **Self-heals leave Maintenance alone.** The reload-a-device and restart-an-App blueprints skip anything labelled
+  Maintenance (update the blueprints from this repository).
+
 ## 0.1.13
 - **Outlets left on with nothing drawing can be turned off for you.** Watson now lists them (on at 0 W for 6 h, not
   labelled Keep on or Maintenance) on its Home Assistant sensor; the new blueprint *turn off outlets left on with
@@ -10,7 +20,6 @@
   stuck retrying, restart an App (e.g. Zigbee2MQTT) when it stops working. Each tries once per cooldown and writes one
   line in the logbook; the App reads those lines (new check *Self-heals*), so the morning summary says "Watson fixed
   it" instead of asking you - or "Watson already tried" when it did not help. The App itself still changes nothing.
-- **Dropping off** no longer counts the blips every Home Assistant restart or reload causes (under 60 s).
 
 ## 0.1.12
 - **A Maintenance label for things you're working on.** In Home Assistant, create a label called **Maintenance** and

@@ -8,6 +8,7 @@ never PASS. A breaking HA change must look like a grey check, not a healthy hous
 """
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 
@@ -697,15 +698,38 @@ def _log_integration(name):
     return parts[0] if parts[0] != "homeassistant" else ".".join(parts[:2])
 
 
+_LOG_SUBJECT = re.compile(r"(?:Error fetching|Failed to update device at|connecting to the device:?) "
+                          r"([A-Za-z0-9 ._-]{1,40}?)(?: data|:| |$)")
+_PRIVATE_IP = re.compile(r"^(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.[\d.]+$")
+
+
+def _log_subjects(messages):
+    """Which device a coordinator error is about, from HA's 'Error fetching <name or IP> data' lines: a device name or
+    a private LAN address, never more of the message. (2026-10-14: 'tplink 122x' was two plugs.)"""
+    out = []
+    for m in messages or []:
+        hit = _LOG_SUBJECT.search(str(m))
+        if not hit:
+            continue
+        subj = hit.group(1).strip()
+        if "." in subj and not _PRIVATE_IP.match(subj):
+            continue
+        short = "." + subj.rsplit(".", 1)[-1] if _PRIVATE_IP.match(subj) else subj
+        if short not in out:
+            out.append(short)
+    return out
+
+
 def check_log_errors(entries, now, threshold=10, window_h=24):
     """Errors in HA's log over the last day, by integration — 2026-10-07 the log held ~1,500 errors nobody had seen,
     and the dead Driveway Alert surfaced only there. Reads system_log/list (HA's own deduplicated error list).
-    Leaves the house: integration names and counts only, never the log text."""
+    Leaves the house: integration names, counts, and which device a fetch error is about (its name or the last part of
+    its LAN address, e.g. '.117'), never the log text."""
     cid = "ha.log_errors"
     if not isinstance(entries, list):
         return unknown(cid, "system_log/list returned no list")
     since = now - timedelta(hours=window_h)
-    per = {}
+    per, subjects = {}, {}
     for e in entries:
         if not isinstance(e, dict) or e.get("level") not in ("ERROR", "CRITICAL"):
             continue
@@ -717,12 +741,17 @@ def check_log_errors(entries, now, threshold=10, window_h=24):
             continue
         name = _log_integration(e.get("name"))
         per[name] = per.get(name, 0) + int(e.get("count") or 1)
+        for s in _log_subjects(e.get("message")):
+            if s not in subjects.setdefault(name, []):
+                subjects[name].append(s)
     ranked = sorted(per.items(), key=lambda x: -x[1])
     total = sum(per.values())
-    ev = {"errors_24h": total, "by_integration": dict(ranked[:15])}
+    ev = {"errors_24h": total, "by_integration": dict(ranked[:15]),
+          "devices": {n: s[:5] for n, s in subjects.items() if s}}
     noisy = [(n, c) for n, c in ranked if c >= threshold]
     if noisy:
-        listed = ", ".join(f"{n} {c}x" for n, c in noisy[:6])
+        listed = ", ".join(f"{n} {c}x" + (f" (from {', '.join(subjects[n][:4])})" if subjects.get(n) else "")
+                           for n, c in noisy[:6])
         return result(cid, WARN, f"{total} errors in HA's log in {window_h} h: {listed}", evidence=ev)
     if total:
         return result(cid, PASS, f"{total} error(s) in HA's log in {window_h} h, none repeating {threshold}+ times",
@@ -831,6 +860,7 @@ def alarm_process_key(name):
 
 MAINTENANCE_LABEL = "maintenance"   # HA label "Maintenance": known, being worked on, don't report it
 KEEP_ON_LABEL = "keep_on"           # HA label "Keep on": an outlet that may sit on at 0 W (never flagged, never cut)
+RARELY_USED_LABEL = "rarely_used"   # HA label "Rarely used": an automation that may go quiet for weeks (guest room)
 
 
 def labelled(entity_registry, device_registry, label):

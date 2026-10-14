@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.13"
+VERSION = "0.1.14"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -263,6 +263,7 @@ def run_checks(data, opts, now, memory=None):
     # Things labelled Maintenance are left out of every device/automation check (devices.maintenance lists them).
     parked = checks.labelled(ents_all, devs, checks.MAINTENANCE_LABEL)
     keep_on = checks.labelled(ents_all, devs, checks.KEEP_ON_LABEL)
+    rarely = checks.labelled(ents_all, devs, checks.RARELY_USED_LABEL)
     s = [x for x in s_all if x.get("entity_id") not in parked] if isinstance(s_all, list) else s_all
     ents = [e for e in ents_all if e.get("entity_id") not in parked] if isinstance(ents_all, list) else ents_all
     flaps = {k: v for k, v in (data.get("flap_candidates") or {}).items() if k not in parked}
@@ -286,7 +287,7 @@ def run_checks(data, opts, now, memory=None):
              now=now, stale_h=opts.get("silent_hours", 24)),
         safe("devices.flapping", checks.check_flapping, data.get("history_24h"), flaps),
         safe("automations.stopped", checks.check_automations, s, now, memory.setdefault("triggers", {}),
-             exceptions=opts.get("automation_exceptions", [])),
+             exceptions=list(opts.get("automation_exceptions", [])) + sorted(rarely)),
         safe("system.disk", checks.check_disk, data.get("host")),
         safe("ha.integrations", checks.check_integrations, data.get("config_entries"),
              memory.setdefault("failing_integrations", {}), exceptions=opts.get("integration_exceptions", [])),

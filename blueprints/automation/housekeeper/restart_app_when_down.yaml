@@ -73,6 +73,11 @@ conditions:
   - condition: template
     value_template: >-
       {{ states(health) in bad and (now() - states[health].last_changed).total_seconds() >= minutes * 60 }}
+  # Maintenance (HA label, on the entity or its device): someone is working on it - leave it alone.
+  - condition: template
+    value_template: >-
+      {% set dev = device_id(health) %}
+      {{ 'maintenance' not in (labels(health) or []) + ((labels(dev) or []) if dev else []) }}
   - condition: template
     value_template: >-
       {{ this.attributes.last_triggered is none

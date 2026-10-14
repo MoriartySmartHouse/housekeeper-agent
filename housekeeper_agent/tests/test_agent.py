@@ -214,3 +214,17 @@ def test_idle_outlets_reach_the_status_sensor_but_not_central():
     assert "switch.plug" not in json.dumps(out["devices.zero_power"])          # names only go to central
     body = agent.house_status(None, list(out.values()), "Watson", data["idle_outlets"])
     assert body["attributes"]["idle_outlets"] == [{"switch": "switch.plug", "meter": "sensor.plug_power", "hours": 8.0}]
+
+
+def test_rarely_used_label_keeps_an_automation_off_the_stopped_list():
+    gaps = [NOW - timedelta(days=10) + timedelta(hours=2 * i) for i in range(6)]
+    mem = {"triggers": {"automation.cube": [t.isoformat() for t in gaps]}}
+    st = [{"entity_id": "automation.cube", "state": "on",
+           "attributes": {"friendly_name": "Cube", "last_triggered": gaps[-1].isoformat()}}]
+    reg = [{"entity_id": "automation.cube", "labels": []}]
+    data = {"errors": {}, "states": st, "entity_registry": reg, "device_registry": []}
+    out = {c["id"]: c for c in agent.run_checks(data, {"watch": []}, NOW, mem)}
+    assert out["automations.stopped"]["status"] == "WARN"
+    reg[0]["labels"] = ["rarely_used"]
+    out = {c["id"]: c for c in agent.run_checks(data, {"watch": []}, NOW, mem)}
+    assert out["automations.stopped"]["status"] == "PASS"

@@ -625,3 +625,20 @@ def test_selfheal_check_reports_fixes_warns_on_failures_and_remembers():
     later = now + timedelta(hours=26)
     assert checks.check_selfheal_events({"events": [], "to": later.isoformat()}, later, mem)["status"] == "PASS"
     assert mem["entries"] == []                                         # older than 24 h: forgotten
+
+
+# ---- 0.1.14: log errors name the device; 'Rarely used' automations
+
+def test_log_errors_name_the_device_not_the_text():
+    now = datetime(2026, 10, 14, 18, 0, tzinfo=UTC)
+    ts = (now - timedelta(hours=1)).timestamp()
+    log = [{"level": "ERROR", "name": "homeassistant.components.tplink.coordinator", "count": 122, "timestamp": ts,
+            "message": ["Error fetching 192.168.0.117 data: Unable to communicate with the device update: Timeout",
+                        "Error fetching 192.168.0.93 data: Unable to communicate with the device update: Timeout"]},
+           {"level": "ERROR", "name": "homeassistant.components.wiz.coordinator", "count": 16, "timestamp": ts,
+            "message": ["Error fetching Kitchen4 data: Failed to update device at 192.168.0.245: "]},
+           {"level": "ERROR", "name": "homeassistant.components.cloud", "count": 12, "timestamp": ts,
+            "message": ["Error fetching api.example.com data: 8.8.8.8 secret=abc"]}]
+    c = checks.check_log_errors(log, now)
+    assert "tplink 122x (from .117, .93)" in c["reason"] and "wiz 16x (from Kitchen4)" in c["reason"]
+    assert "secret" not in json.dumps(c) and "8.8.8.8" not in json.dumps(c) and "example.com" not in json.dumps(c)
