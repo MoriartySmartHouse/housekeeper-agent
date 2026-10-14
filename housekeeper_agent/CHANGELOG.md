@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.13
+- **Outlets left on with nothing drawing can be turned off for you.** Watson now lists them (on at 0 W for 6 h, not
+  labelled Keep on or Maintenance) on its Home Assistant sensor; the new blueprint *turn off outlets left on with
+  nothing drawing* turns them off, checks, and logs it, and Watson tells you in the morning. Label anything that must
+  stay powered at 0 W **Keep on** first (a pump, a heater or freezer on its own thermostat, a charger).
+- **Watson reports what your self-heals did.** New blueprints (in this repository, `blueprints/automation/housekeeper/`)
+  let Home Assistant fix the safe, common problems itself: reload a device that dropped off, reload an integration
+  stuck retrying, restart an App (e.g. Zigbee2MQTT) when it stops working. Each tries once per cooldown and writes one
+  line in the logbook; the App reads those lines (new check *Self-heals*), so the morning summary says "Watson fixed
+  it" instead of asking you - or "Watson already tried" when it did not help. The App itself still changes nothing.
+- **Dropping off** no longer counts the blips every Home Assistant restart or reload causes (under 60 s).
+
 ## 0.1.12
 - **A Maintenance label for things you're working on.** In Home Assistant, create a label called **Maintenance** and
   put it on any number of devices or entities (a device's label covers all its entities). While it is on, Watson

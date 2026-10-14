@@ -1,0 +1,83 @@
+blueprint:
+  name: "Watson self-heal: reload a device that went unavailable"
+  description: >-
+    When a device stays **unavailable**, reload the integration it belongs to - once per cooldown - and record
+    whether that brought it back. Watson (the Housekeeper App) reads that record, so the morning summary says
+    "Watson fixed it" instead of asking you, or "Watson already tried" when it did not help.
+
+
+    Safe by design: it only reloads (it never switches anything), it refuses locks, climate, alarms, valves,
+    sirens and water heaters, and it refuses whole-mesh integrations (MQTT / Zigbee2MQTT, ZHA, Z-Wave) - for those,
+    use "restart an App when it is down".
+  domain: automation
+  source_url: https://github.com/MoriartySmartHouse/housekeeper-agent/blob/main/blueprints/automation/housekeeper/reload_unavailable_device.yaml
+  input:
+    target:
+      name: Device
+      description: An entity of the device that drops off (e.g. the bulb's light, the plug's switch).
+      selector:
+        entity:
+          domain: [light, switch, media_player, fan, camera, sensor, binary_sensor, button, number, select, remote]
+    minutes:
+      name: Unavailable for
+      default: 5
+      selector:
+        number: {min: 2, max: 120, unit_of_measurement: min}
+    cooldown_hours:
+      name: At most one try every
+      default: 6
+      selector:
+        number: {min: 1, max: 48, unit_of_measurement: h}
+    check_after:
+      name: Check the result after
+      default: 60
+      selector:
+        number: {min: 15, max: 600, unit_of_measurement: s}
+
+mode: single
+max_exceeded: silent
+
+variables:
+  target: !input target
+  minutes: !input minutes
+  cooldown_h: !input cooldown_hours
+  mesh: [mqtt, zha, zwave_js, deconz, matter]
+
+triggers:
+  - trigger: state
+    entity_id: !input target
+    to: unavailable
+    for:
+      minutes: !input minutes
+  # Also look once an hour: a device that was already down when Home Assistant started has no state change to see.
+  - trigger: time_pattern
+    minutes: "17"
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ is_state(target, 'unavailable')
+         and (now() - states[target].last_changed).total_seconds() >= minutes * 60 }}
+  - condition: template
+    value_template: >-
+      {% set entry = config_entry_id(target) %}
+      {{ entry is not none and config_entry_attr(entry, 'domain') not in mesh }}
+  - condition: template
+    value_template: >-
+      {{ this.attributes.last_triggered is none
+         or (now() - this.attributes.last_triggered).total_seconds() > cooldown_h * 3600 }}
+
+actions:
+  - action: homeassistant.reload_config_entry
+    continue_on_error: true
+    target:
+      entity_id: "{{ target }}"
+  - delay:
+      seconds: !input check_after
+  - action: logbook.log
+    data:
+      name: Watson self-heal
+      entity_id: "{{ target }}"
+      message: >-
+        {{ (state_attr(target, 'friendly_name') or target) | replace(': ', ' ') }}:
+        {{ 'still down' if is_state(target, 'unavailable') else 'fixed' }} - reloaded its integration

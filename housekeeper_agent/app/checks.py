@@ -560,11 +560,13 @@ def _switch_meter(eid, dev_switches, meters):
     return meters[0] if len(dev_switches) == 1 else None
 
 
-def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, max_w=0.5, exceptions=()):
+def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, max_w=0.5, exceptions=(),
+                     found=None):
     """A switch that is ON while its own power meter has read ~0 W for hours: the HVAC-03 class (the gym fan was
     commanded on ~80 min/day for 41 days while unplugged). Kasa meters take a while to register watts, so a plug only
     counts after `hours_needed` of on-and-zero, tracked across runs in `memory` ({switch: iso since}). Evidence names
-    the switch and hours only."""
+    the switch and hours only. `found` (a dict, filled in place) gets {switch entity: {"meter", "hours"}} of the
+    flagged ones: it stays in the house (the status sensor's `idle_outlets`, for the turn-off self-heal), never sent."""
     cid = "devices.zero_power"
     if not isinstance(states, list) or not isinstance(entity_registry, list):
         return unknown(cid, "states / entity registry not readable")
@@ -617,6 +619,8 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
         hrs = hours(now - since)
         if hrs >= hours_needed:
             flagged.append((name, hrs))
+            if found is not None:
+                found[eid] = {"meter": meter[0], "hours": hrs}
     for eid in [k for k in memory if k not in seen]:
         memory.pop(eid)
     flagged.sort(key=lambda x: -x[1])
@@ -1074,3 +1078,71 @@ def check_alarm_events(states, entities, history, logbook, now, memory=None, sha
     listed = ", ".join(f"{n} {p['count']}x (worst {p['worst']}{', on now' if p['active'] else ''})" for n, p in ranked)
     return result(cid, PASS, f"{len(all_eps)} alarm episode(s) in {ALARM_WINDOW_H} h: {listed}{note}"[:500],
                   evidence=ev)
+
+
+# ---------------------------------------------------------------- self-heals (blueprints/automation/housekeeper)
+#
+# The self-heal blueprints run in the house's own Home Assistant (installed by the owner; the App never acts, DEC-34).
+# Each attempt writes ONE logbook line:  name "Watson self-heal",  message "<target>: <result> - <what it did>",
+# result "fixed" or "still down". This check collects those lines (incrementally, like the alarm lines) so central
+# can say "Watson fixed X at 03:12" instead of asking, and "Watson already tried" when it did not work.
+
+SELFHEAL_NAME = "Watson self-heal"
+SELFHEAL_RESULTS = ("fixed", "still down")
+SELFHEAL_KEEP = 200
+
+
+def selfheal_log_entries(logbook):
+    """'Watson self-heal' logbook lines -> [[iso, target, result, detail]]. Malformed lines are skipped."""
+    out = []
+    for e in logbook if isinstance(logbook, list) else []:
+        if not isinstance(e, dict) or str(e.get("name") or "") != SELFHEAL_NAME:
+            continue
+        target, sep, rest = str(e.get("message") or "").partition(": ")
+        res, _, detail = rest.partition(" - ")
+        res = res.strip().lower()
+        try:
+            when = parse_ts(e.get("when"))
+        except (ValueError, TypeError, OverflowError):
+            when = None
+        if sep and when and target.strip() and res in SELFHEAL_RESULTS:
+            out.append([when.isoformat(), target.strip()[:80], res, detail.strip()[:120]])
+    return out
+
+
+def check_selfheal_events(logbook, now, memory=None):
+    """What the house's self-heal blueprints did in the last 24 h. PASS when everything they tried worked; WARN when
+    one could not fix what it tried (the device then also shows in its own check - this says a fix was tried).
+    `logbook` = {"events": [...], "to": iso} or None (read failed: lines missing this run, memory still counts)."""
+    cid = "selfheal.events"
+    memory = {} if memory is None else memory
+    read_ok = isinstance(logbook, dict) and isinstance(logbook.get("events"), list)
+    new = selfheal_log_entries(logbook["events"]) if read_ok else []
+    cutoff = now - timedelta(hours=ALARM_WINDOW_H)
+    kept = {}
+    for x in [*(memory.get("entries") if isinstance(memory.get("entries"), list) else []), *new]:
+        if not (isinstance(x, list) and len(x) == 4 and all(isinstance(v, str) for v in x)):
+            continue
+        try:
+            when = parse_ts(x[0])
+        except ValueError:
+            continue
+        if when and when >= cutoff:
+            kept[(when.isoformat(), x[1])] = [when.isoformat(), x[1], x[2], x[3]]
+    entries = [kept[k] for k in sorted(kept)][-SELFHEAL_KEEP:]
+    memory["entries"] = entries
+    if read_ok and logbook.get("to"):
+        memory["to"] = logbook["to"]
+    heals = [{"when": w, "target": t, "result": r, "detail": d} for w, t, r, d in entries]
+    ev = {"heals": heals, "read": "read" if read_ok else "unread"}
+    note = "" if read_ok else "; logbook not read this run"
+    if not heals:
+        return result(cid, PASS, f"no self-heals in {ALARM_WINDOW_H} h{note}", evidence=ev)
+    failed = [h for h in heals if h["result"] != "fixed"]
+    fixed = [h for h in heals if h["result"] == "fixed"]
+    listed = ", ".join(sorted({h["target"] for h in fixed}))
+    if failed:
+        tried = ", ".join(sorted({h["target"] for h in failed}))
+        return result(cid, WARN, f"self-heal tried and could not fix: {tried}"
+                      + (f"; fixed: {listed}" if listed else "") + note, evidence=ev)
+    return result(cid, PASS, f"Watson fixed {len(fixed)} in {ALARM_WINDOW_H} h: {listed}{note}"[:500], evidence=ev)
