@@ -642,3 +642,9 @@ def test_log_errors_name_the_device_not_the_text():
     c = checks.check_log_errors(log, now)
     assert "tplink 122x (from .117, .93)" in c["reason"] and "wiz 16x (from Kitchen4)" in c["reason"]
     assert "secret" not in json.dumps(c) and "8.8.8.8" not in json.dumps(c) and "example.com" not in json.dumps(c)
+
+
+def test_log_subject_keeps_multi_word_names():
+    msgs = ["Error fetching Living Room 1 data: Failed to update device at 192.168.0.12: ",
+            "Error fetching 192.168.0.117 data: Unable to communicate with the device update"]
+    assert checks._log_subjects(msgs) == ["Living Room 1", ".117"]

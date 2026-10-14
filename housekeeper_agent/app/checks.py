@@ -698,8 +698,10 @@ def _log_integration(name):
     return parts[0] if parts[0] != "homeassistant" else ".".join(parts[:2])
 
 
-_LOG_SUBJECT = re.compile(r"(?:Error fetching|Failed to update device at|connecting to the device:?) "
-                          r"([A-Za-z0-9 ._-]{1,40}?)(?: data|:| |$)")
+# "Error fetching Living Room 1 data: ..." (name up to " data"), "Failed to update device at 192.168.0.245: ...",
+# "... connecting to the device: 192.168.0.117:9999". 0.1.14 stopped names at the first space ("Living").
+_LOG_SUBJECT = re.compile(r"Error fetching (.{1,40}?) data\b|Failed to update device at ([0-9.]+)|"
+                          r"connecting to the device:? ([0-9.]+)")
 _PRIVATE_IP = re.compile(r"^(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.[\d.]+$")
 
 
@@ -711,7 +713,7 @@ def _log_subjects(messages):
         hit = _LOG_SUBJECT.search(str(m))
         if not hit:
             continue
-        subj = hit.group(1).strip()
+        subj = next(g for g in hit.groups() if g).strip()
         if "." in subj and not _PRIVATE_IP.match(subj):
             continue
         short = "." + subj.rsplit(".", 1)[-1] if _PRIVATE_IP.match(subj) else subj

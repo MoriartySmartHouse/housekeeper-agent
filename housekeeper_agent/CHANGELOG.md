@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.15
+- **Log errors name the whole device.** A multi-word name ("Living Room 1") was cut to its first word.
+
 ## 0.1.14
 - **Dropping off** no longer counts the blips every Home Assistant restart or reload causes (under 60 s). (Listed
   under 0.1.13 by mistake; it ships here.)
