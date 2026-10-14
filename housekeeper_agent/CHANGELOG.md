@@ -7,6 +7,8 @@
   button, a seasonal one) and Watson never reports it as "stopped firing". Unlike Maintenance it doesn't expire.
 - **Log errors say which device.** "tplink 122x" now reads "tplink 122x (from .117, .93)" or names the bulb, so you
   know what to look at. Only the device's name or the last part of its network address is sent, never the log text.
+- **A parked alarm process ends its alarm.** When a process is switched to Maintenance (e.g. the sauna while its
+  probe is out), the fault before it now ends there, instead of reading "still on" in the morning summary.
 - **Self-heals leave Maintenance alone.** The reload-a-device and restart-an-App blueprints skip anything labelled
   Maintenance (update the blueprints from this repository).
 

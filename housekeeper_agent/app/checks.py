@@ -998,10 +998,11 @@ def _state_points(rows):
 def _history_episodes(rows, now):
     """Contiguous non-Normal runs. Tier changes inside a run (Fault -> Critical -> Warn) stay one episode whose tier is
     the worst; seconds per tier are kept. `unknown` / `unavailable` (HA restarting, a reload) neither start nor end
-    an episode."""
+    an episode. `Maintenance` (a person parked the process, DEC-62) ends one like Normal: the alarm is deliberately
+    off, so a Fault before it is over (2026-10-14: the parked sauna read "Fault ... still on" for 18 h)."""
     eps, cur = [], None
     for t, s in _state_points(rows):
-        if s == "Normal":
+        if s in ("Normal", "Maintenance"):
             if cur:
                 cur["tiers"][cur["at"]] = cur["tiers"].get(cur["at"], 0) + (t - cur["since"]).total_seconds()
                 cur["end"] = t

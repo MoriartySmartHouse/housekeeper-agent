@@ -220,3 +220,12 @@ def test_share_messages_off_keeps_alarm_text_at_home():
     assert any(e["msg"] for e in on["evidence"]["episodes"])
     assert all(e["msg"] is None for e in off["evidence"]["episodes"])
     assert off["evidence"]["messages"] == "withheld"
+
+
+def test_maintenance_ends_a_fault_episode():
+    now = datetime(2026, 10, 14, 19, 0, tzinfo=UTC)
+    rows = [{"s": "Normal", "lu": (now - timedelta(hours=26)).timestamp()},
+            {"s": "Fault", "lu": (now - timedelta(hours=24)).timestamp()},
+            {"s": "Maintenance", "lu": (now - timedelta(hours=18)).timestamp()}]
+    eps = checks._history_episodes(rows, now)
+    assert len(eps) == 1 and eps[0]["end"] is not None and round(eps[0]["tiers"]["Fault"]) == 6 * 3600
