@@ -560,11 +560,13 @@ def _switch_meter(eid, dev_switches, meters):
     return meters[0] if len(dev_switches) == 1 else None
 
 
-def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, max_w=0.5, exceptions=()):
+def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, max_w=0.5, exceptions=(),
+                     found=None):
     """A switch that is ON while its own power meter has read ~0 W for hours: the HVAC-03 class (the gym fan was
     commanded on ~80 min/day for 41 days while unplugged). Kasa meters take a while to register watts, so a plug only
     counts after `hours_needed` of on-and-zero, tracked across runs in `memory` ({switch: iso since}). Evidence names
-    the switch and hours only."""
+    the switch and hours only. `found` (a dict, filled in place) gets {switch entity: {"meter", "hours"}} of the
+    flagged ones: it stays in the house (the status sensor's `idle_outlets`, for the turn-off self-heal), never sent."""
     cid = "devices.zero_power"
     if not isinstance(states, list) or not isinstance(entity_registry, list):
         return unknown(cid, "states / entity registry not readable")
@@ -617,6 +619,8 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
         hrs = hours(now - since)
         if hrs >= hours_needed:
             flagged.append((name, hrs))
+            if found is not None:
+                found[eid] = {"meter": meter[0], "hours": hrs}
     for eid in [k for k in memory if k not in seen]:
         memory.pop(eid)
     flagged.sort(key=lambda x: -x[1])

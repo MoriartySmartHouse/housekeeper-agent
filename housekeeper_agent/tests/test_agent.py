@@ -1,7 +1,7 @@
 import json
 import signal
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -194,3 +194,23 @@ def test_maintenance_label_hides_a_device_from_the_device_checks():
                                                  "device_registry": devs}, {"watch": []}, NOW)}
     assert out["devices.battery"]["status"] == "PASS"
     assert "Garage Weather" in out["devices.maintenance"]["reason"]
+
+
+def test_idle_outlets_reach_the_status_sensor_but_not_central():
+    reg = [{"entity_id": "switch.plug", "device_id": "p", "unique_id": "U1", "platform": "tplink", "labels": []},
+           {"entity_id": "sensor.plug_power", "device_id": "p", "unique_id": "U1_current_power_w", "labels": []},
+           {"entity_id": "switch.kept", "device_id": "k", "unique_id": "U2", "platform": "tplink",
+            "labels": ["keep_on"]},
+           {"entity_id": "sensor.kept_power", "device_id": "k", "unique_id": "U2_current_power_w", "labels": []}]
+    old = (NOW - timedelta(hours=8)).isoformat()
+    pw = {"device_class": "power", "unit_of_measurement": "W"}
+    states = [{"entity_id": "switch.plug", "state": "on", "last_changed": old, "attributes": {"friendly_name": "Plug"}},
+              {"entity_id": "sensor.plug_power", "state": "0.0", "last_changed": old, "attributes": pw},
+              {"entity_id": "switch.kept", "state": "on", "last_changed": old, "attributes": {"friendly_name": "Kept"}},
+              {"entity_id": "sensor.kept_power", "state": "0.0", "last_changed": old, "attributes": pw}]
+    data = {"errors": {}, "states": states, "entity_registry": reg, "device_registry": [{"id": "p"}, {"id": "k"}]}
+    out = {c["id"]: c for c in agent.run_checks(data, {"watch": []}, NOW)}
+    assert data["idle_outlets"] == {"switch.plug": {"meter": "sensor.plug_power", "hours": 8.0}}
+    assert "switch.plug" not in json.dumps(out["devices.zero_power"])          # names only go to central
+    body = agent.house_status(None, list(out.values()), "Watson", data["idle_outlets"])
+    assert body["attributes"]["idle_outlets"] == [{"switch": "switch.plug", "meter": "sensor.plug_power", "hours": 8.0}]

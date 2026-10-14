@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.12"
+VERSION = "0.1.13"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -294,7 +294,8 @@ def run_checks(data, opts, now, memory=None):
              threshold=opts.get("log_error_threshold", 10)),
         safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
              hours_needed=opts.get("zero_power_hours", 6),
-             exceptions=list(opts.get("zero_power_exceptions", [])) + sorted(keep_on)),
+             exceptions=list(opts.get("zero_power_exceptions", [])) + sorted(keep_on),
+             found=data.setdefault("idle_outlets", {})),
         safe("devices.maintenance", checks.check_maintenance, ents_all, devs, s_all, now,
              memory.setdefault("maintenance", {}), max_days=opts.get("maintenance_days", 14)),
         safe("alarms.events", checks.check_alarm_events, s_all,
@@ -336,8 +337,10 @@ def household_list(reply, results):
             if r.get("household") and r.get("status") in (checks.WARN, checks.FAIL)]
 
 
-def house_status(reply, results, persona="Watson"):
-    """Our sensor's state + attributes, so the household sees their house assistant's status in HA."""
+def house_status(reply, results, persona="Watson", idle_outlets=None):
+    """Our sensor's state + attributes, so the household sees their house assistant's status in HA.
+    `idle_outlets`: outlets on at ~0 W for hours (not Keep on / Maintenance), for the house's own turn-off self-heal
+    (blueprint `turn_off_idle_outlets`) to act on. The App only lists them; Home Assistant decides and switches."""
     messages = household_list(reply, results)
     state = "attention" if messages else "all_good"
     summary = "all good" if not messages else f"{len(messages)} things need attention"
@@ -350,6 +353,8 @@ def house_status(reply, results, persona="Watson"):
         "note": str(reply.get("note") or "")[:500] if isinstance(reply, dict) else "",
         "checked_at": datetime.now(UTC).isoformat(),
         "central_reached": reply is not None,
+        "idle_outlets": [{"switch": k, "meter": v["meter"], "hours": v["hours"]}
+                         for k, v in sorted((idle_outlets or {}).items())][:30],
     }}
     return body
 
@@ -404,7 +409,7 @@ def cycle(opts, token):
         log.error("could not reach central: %s", exc)
     status = None
     try:
-        status = house_status(reply, results, opts.get("persona") or "Watson")
+        status = house_status(reply, results, opts.get("persona") or "Watson", data.get("idle_outlets"))
         write_house_status(token, status)
     except Exception as exc:  # noqa: BLE001 — kept anyway: repost_status puts it there once HA answers
         log.error("could not write %s: %s", STATUS_ENTITY, exc)

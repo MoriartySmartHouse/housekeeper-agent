@@ -1,0 +1,90 @@
+blueprint:
+  name: "Watson self-heal: turn off outlets left on with nothing drawing"
+  description: >-
+    Watson (the Housekeeper App) lists outlets that have been **on but drawing nothing** for hours (an empty socket,
+    an appliance switched off at the appliance). This turns them off, checks each one really went off, and writes
+    one logbook line per outlet, which Watson reports in the morning summary ("Watson turned off X").
+
+
+    Never touches an outlet labelled **Keep on** or **Maintenance** (on the outlet or its device), anything you list
+    below, or an outlet whose meter shows power again. Put **Keep on** on anything that may sit at 0 W and must stay
+    powered: a sump or well pump, a heater or freezer on its own thermostat, a charger, a low-draw sensor.
+  domain: automation
+  source_url: https://github.com/MoriartySmartHouse/housekeeper-agent/blob/main/blueprints/automation/housekeeper/turn_off_idle_outlets.yaml
+  input:
+    status_sensor:
+      name: Watson status sensor
+      default: sensor.housekeeper_status
+      selector:
+        entity:
+          domain: sensor
+    min_hours:
+      name: On with nothing drawing for at least
+      default: 6
+      selector:
+        number: {min: 2, max: 72, unit_of_measurement: h}
+    max_watts:
+      name: Counts as nothing below
+      default: 0.5
+      selector:
+        number: {min: 0, max: 5, step: 0.1, unit_of_measurement: W}
+    never:
+      name: Never turn off these
+      default: []
+      selector:
+        entity:
+          domain: switch
+          multiple: true
+
+mode: single
+max_exceeded: silent
+
+variables:
+  status: !input status_sensor
+  min_h: !input min_hours
+  max_w: !input max_watts
+  never: !input never
+  # Re-checked here, at the moment of acting, whatever the App listed an hour ago.
+  todo: >-
+    {% set ns = namespace(out=[]) %}
+    {% for o in state_attr(status, 'idle_outlets') or [] %}
+      {% set sw = o.switch | default('') %}
+      {% set dev = device_id(sw) %}
+      {% set labs = (labels(sw) or []) + ((labels(dev) or []) if dev else []) %}
+      {% if sw.startswith('switch.') and is_state(sw, 'on') and sw not in never
+            and 'keep_on' not in labs and 'maintenance' not in labs
+            and (o.hours | default(0) | float(0)) >= min_h
+            and states(o.meter | default('')) | float(99) <= max_w %}
+        {% set ns.out = ns.out + [{'switch': sw, 'hours': o.hours | float(0) | round(0) | int}] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.out[:10] }}
+
+triggers:
+  # The App rewrites its sensor every hour; this runs right after each check.
+  - trigger: state
+    entity_id: !input status_sensor
+    attribute: checked_at
+
+conditions:
+  - condition: template
+    value_template: "{{ todo | count > 0 }}"
+
+actions:
+  - repeat:
+      for_each: "{{ todo }}"
+      sequence:
+        - action: switch.turn_off
+          continue_on_error: true
+          target:
+            entity_id: "{{ repeat.item.switch }}"
+        - delay:
+            seconds: 15
+        - action: logbook.log
+          data:
+            name: Watson self-heal
+            entity_id: "{{ repeat.item.switch }}"
+            message: >-
+              {{ (state_attr(repeat.item.switch, 'friendly_name') or repeat.item.switch) | replace(': ', ' ') }}:
+              {{ 'fixed' if is_state(repeat.item.switch, 'off') else 'still down' }} - turned off, it was on with
+              nothing drawing for {{ repeat.item.hours }} h
