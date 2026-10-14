@@ -329,12 +329,28 @@ def check_flapping(history, candidates, min_drops=3):
     return result(cid, WARN, f"{len(flappy)} device(s) keep dropping off: {listed}", evidence=ev)
 
 
-def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_platforms=("mobile_app",)):
+def _device_heard(states, entity_registry):
+    """{device_id: newest last_reported/last_updated over all its entities}. A battery reading only changes when the
+    level does, so the device's other entities (temperature etc.) say whether it is still talking."""
+    dev = {e.get("entity_id"): e.get("device_id") for e in entity_registry if e.get("device_id")}
+    out = {}
+    for s in states:
+        d = dev.get(s.get("entity_id"))
+        t = parse_ts(s.get("last_reported") or s.get("last_updated")) if d else None
+        if t and (d not in out or t > out[d]):
+            out[d] = t
+    return out
+
+
+def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_platforms=("mobile_app",),
+                    now=None, stale_h=24):
     cid = "devices.battery"
     if not isinstance(states, list) or not isinstance(entity_registry, list):
         return unknown(cid, "states / entity registry not readable")
     platform = {e.get("entity_id"): e.get("platform") for e in entity_registry}
-    low, levels = [], {}
+    device = {e.get("entity_id"): e.get("device_id") for e in entity_registry}
+    heard = _device_heard(states, entity_registry) if now else {}
+    low, levels, quiet = [], {}, []
     seen = 0
     for s in states:
         a = s.get("attributes", {})
@@ -349,17 +365,31 @@ def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_p
         seen += 1
         name = a.get("friendly_name") or s["entity_id"]
         levels[name[:60]] = round(pct)
-        if pct <= warn_pct:
+        if pct > warn_pct:
+            continue
+        last = heard.get(device.get(s["entity_id"]))
+        if last and now - last > timedelta(hours=stale_h):
+            # The device stopped talking: its last battery number is old news, not a reading (2026-10-14: two
+            # re-paired sensors that never came back showed "0 %" for a day; the fix was a re-pair, not a battery).
+            quiet.append((name, pct, hours(now - last)))
+        else:
             low.append((name, pct))
     low.sort(key=lambda x: x[1])
     # `levels` (name -> %, all batteries) lets central project days-left from the trend (Session C).
     ev = {"batteries_checked": seen, "low": [{"name": n, "pct": p} for n, p in low],
+          "not_heard": [{"name": n, "last_pct": p, "h": h} for n, p, h in quiet],
           "levels": dict(sorted(levels.items())[:60])}
     if not seen:
         return unknown(cid, "no battery sensors found")
-    if not low:
+    quiet_txt = ", ".join(f"{n} (not heard for {_gap_text(h)}, last read {p:.0f} %)" for n, p, h in quiet[:5])
+    if not low and not quiet:
         return result(cid, PASS, f"all {seen} batteries above {warn_pct} %", evidence=ev)
+    if not low:
+        return result(cid, WARN, f"{len(quiet)} low reading(s) from devices that stopped reporting: {quiet_txt}",
+                      evidence=ev)
     listed = ", ".join(f"{n} {p:.0f} %" for n, p in low[:5])
+    if quiet:
+        listed += f"; stopped reporting: {quiet_txt}"
     status = FAIL if low[0][1] <= fail_pct else WARN
     first = low[0][0]
     return result(cid, status, f"{len(low)} low: {listed}",
@@ -776,6 +806,59 @@ ALARM_MATCH_S = 120            # a logbook line belongs to an episode if it is w
 def alarm_process_key(name):
     """The id script.estate_alarm_notify derives from a process name: 'Sauna Heat' -> 'sauna_heat'."""
     return str(name).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+MAINTENANCE_LABEL = "maintenance"   # HA label "Maintenance": known, being worked on, don't report it
+KEEP_ON_LABEL = "keep_on"           # HA label "Keep on": an outlet that may sit on at 0 W (never flagged, never cut)
+
+
+def labelled(entity_registry, device_registry, label):
+    """Entity ids carrying `label`, on the entity itself or on its device (one label on a device covers all of it)."""
+    if not isinstance(entity_registry, list):
+        return set()
+    devs = {d.get("id") for d in device_registry or [] if isinstance(d, dict) and label in (d.get("labels") or [])}
+    return {e["entity_id"] for e in entity_registry
+            if isinstance(e, dict) and isinstance(e.get("entity_id"), str)
+            and (label in (e.get("labels") or []) or (e.get("device_id") and e.get("device_id") in devs))}
+
+
+def check_maintenance(entity_registry, device_registry, states, now, memory=None, max_days=14):
+    """What the household has parked with the Maintenance label. Parked things are left out of the device and
+    automation checks, so this check keeps them from being forgotten: listed every time, WARN once any has been
+    parked longer than `max_days` (like an exception that runs out). `memory` = {key: iso first seen}."""
+    cid = "devices.maintenance"
+    if not isinstance(entity_registry, list) or not isinstance(device_registry, list):
+        return unknown(cid, "entity / device registry not readable")
+    memory = {} if memory is None else memory
+    names = {}
+    for d in device_registry:
+        if isinstance(d, dict) and MAINTENANCE_LABEL in (d.get("labels") or []):
+            names[f"device:{d.get('id')}"] = d.get("name_by_user") or d.get("name") or d.get("id")
+    friendly = {s.get("entity_id"): (s.get("attributes") or {}).get("friendly_name") for s in states or []}
+    for e in entity_registry:
+        if isinstance(e, dict) and MAINTENANCE_LABEL in (e.get("labels") or []):
+            names[f"entity:{e.get('entity_id')}"] = friendly.get(e.get("entity_id")) or e.get("entity_id")
+    for k in [k for k in memory if k not in names]:
+        memory.pop(k)
+    ages = {}
+    for k in names:
+        try:
+            since = parse_ts(memory.get(k)) if isinstance(memory.get(k), str) else None
+        except ValueError:
+            since = None
+        since = since or now
+        memory[k] = since.isoformat()
+        ages[k] = (now - since).total_seconds() / 86400
+    ev = {"parked": [{"name": names[k], "days": round(ages[k], 1)} for k in sorted(names, key=lambda k: -ages[k])]}
+    if not names:
+        return result(cid, PASS, "nothing in maintenance", evidence=ev)
+    over = sorted((k for k in names if ages[k] > max_days), key=lambda k: -ages[k])
+    if over:
+        listed = ", ".join(f"{names[k]} ({ages[k]:.0f} d)" for k in over[:5])
+        return result(cid, WARN, f"{len(over)} in maintenance over {max_days} d: {listed}; fix or take the label off",
+                      f"{len(over)} thing(s) have been in maintenance for over {max_days} days.", "household", ev)
+    listed = ", ".join(names[k] for k in list(names)[:8])
+    return result(cid, PASS, f"{len(names)} in maintenance (not checked): {listed}", evidence=ev)
 
 
 def alarm_entities(entity_registry):

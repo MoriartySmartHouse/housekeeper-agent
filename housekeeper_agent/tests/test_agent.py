@@ -20,7 +20,7 @@ def test_one_broken_check_does_not_kill_the_card(monkeypatch):
     monkeypatch.setattr(checks, "check_batteries", boom)
     out = agent.run_checks({"errors": {}, "states": []}, {"watch": []}, NOW)
     by_id = {c["id"]: c["status"] for c in out}
-    assert by_id["devices.battery"] == "UNKNOWN" and len(out) == 16   # + alarms.events
+    assert by_id["devices.battery"] == "UNKNOWN" and len(out) == 17   # + alarms.events, devices.maintenance
 
 
 def test_bad_watch_entries_become_unknown_not_crash():
@@ -179,3 +179,18 @@ def test_house_facts_is_opt_in():
     assert "house.facts" not in {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, {}, now)}
     opts = {"facts_entity": "sensor.house_facts"}
     assert "house.facts" in {c["id"] for c in agent.run_checks({"states": [], "errors": {}}, opts, now)}
+
+
+def test_maintenance_label_hides_a_device_from_the_device_checks():
+    reg = [{"entity_id": "sensor.garage_battery", "device_id": "g", "platform": "mqtt", "labels": []},
+           {"entity_id": "sensor.ok_battery", "device_id": "o", "platform": "mqtt", "labels": []}]
+    devs = [{"id": "g", "name": "Garage Weather", "labels": ["maintenance"]}, {"id": "o", "name": "Ok", "labels": []}]
+    bat = {"device_class": "battery", "unit_of_measurement": "%"}
+    states = [{"entity_id": "sensor.garage_battery", "state": "0", "last_reported": NOW.isoformat(),
+               "attributes": {**bat, "friendly_name": "Garage Weather Battery"}},
+              {"entity_id": "sensor.ok_battery", "state": "90", "last_reported": NOW.isoformat(),
+               "attributes": {**bat, "friendly_name": "Ok Battery"}}]
+    out = {c["id"]: c for c in agent.run_checks({"errors": {}, "states": states, "entity_registry": reg,
+                                                 "device_registry": devs}, {"watch": []}, NOW)}
+    assert out["devices.battery"]["status"] == "PASS"
+    assert "Garage Weather" in out["devices.maintenance"]["reason"]

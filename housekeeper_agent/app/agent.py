@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.11"
+VERSION = "0.1.12"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
@@ -241,9 +241,16 @@ def gather_alarms(core, data, errors):
 
 
 def run_checks(data, opts, now, memory=None):
-    s = data.get("states")
+    s_all = data.get("states")
     memory = {} if memory is None else memory
-    ents = data.get("entity_registry")
+    ents_all = data.get("entity_registry")
+    devs = data.get("device_registry")
+    # Things labelled Maintenance are left out of every device/automation check (devices.maintenance lists them).
+    parked = checks.labelled(ents_all, devs, checks.MAINTENANCE_LABEL)
+    keep_on = checks.labelled(ents_all, devs, checks.KEEP_ON_LABEL)
+    s = [x for x in s_all if x.get("entity_id") not in parked] if isinstance(s_all, list) else s_all
+    ents = [e for e in ents_all if e.get("entity_id") not in parked] if isinstance(ents_all, list) else ents_all
+    flaps = {k: v for k, v in (data.get("flap_candidates") or {}).items() if k not in parked}
     out = []
     if data.get("errors", {}).get("core/websocket"):
         out.append(checks.result("core.reachable", checks.FAIL,
@@ -252,16 +259,17 @@ def run_checks(data, opts, now, memory=None):
         out.append(checks.result("core.reachable", checks.PASS, "HA Core answering"))
     out += [
         safe("supervisor.health", checks.check_supervisor, data.get("resolution")),
-        safe("backup.offsite", checks.check_backup_offsite, data.get("backup_info"), now, states=s),
+        safe("backup.offsite", checks.check_backup_offsite, data.get("backup_info"), now, states=s_all),
         safe("backup.last_attempt", checks.check_backup_last_attempt, data.get("backup_info"), now),
         safe("ha.repairs", checks.check_repairs, data.get("repairs")),
         safe("ha.notifications", checks.check_notifications, data.get("notifications")),
-        safe("ha.updates", checks.check_updates, s, checks.integration_domains(data.get("config"))),
-        safe("devices.silent", checks.check_silent_devices, s, ents, data.get("device_registry"), now,
+        safe("ha.updates", checks.check_updates, s_all, checks.integration_domains(data.get("config"))),
+        safe("devices.silent", checks.check_silent_devices, s, ents, devs, now,
              silent_h=opts.get("silent_hours", 24), exceptions=opts.get("silent_exceptions", []),
              memory=memory.setdefault("silent_since", {})),
-        safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25)),
-        safe("devices.flapping", checks.check_flapping, data.get("history_24h"), data.get("flap_candidates") or {}),
+        safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25),
+             now=now, stale_h=opts.get("silent_hours", 24)),
+        safe("devices.flapping", checks.check_flapping, data.get("history_24h"), flaps),
         safe("automations.stopped", checks.check_automations, s, now, memory.setdefault("triggers", {}),
              exceptions=opts.get("automation_exceptions", [])),
         safe("system.disk", checks.check_disk, data.get("host")),
@@ -270,18 +278,22 @@ def run_checks(data, opts, now, memory=None):
         safe("ha.log_errors", checks.check_log_errors, data.get("system_log"), now,
              threshold=opts.get("log_error_threshold", 10)),
         safe("devices.zero_power", checks.check_zero_power, s, ents, now, memory.setdefault("zero_power", {}),
-             hours_needed=opts.get("zero_power_hours", 6), exceptions=opts.get("zero_power_exceptions", [])),
-        safe("alarms.events", checks.check_alarm_events, s, data.get("alarm_entities", checks.alarm_entities(ents)),
+             hours_needed=opts.get("zero_power_hours", 6),
+             exceptions=list(opts.get("zero_power_exceptions", [])) + sorted(keep_on)),
+        safe("devices.maintenance", checks.check_maintenance, ents_all, devs, s_all, now,
+             memory.setdefault("maintenance", {}), max_days=opts.get("maintenance_days", 14)),
+        safe("alarms.events", checks.check_alarm_events, s_all,
+             data.get("alarm_entities", checks.alarm_entities(ents_all)),
              data.get("alarm_history"), data.get("alarm_logbook"), now, memory.setdefault("alarm_log", {}),
              share_messages=opts.get("share_alarm_messages", True)),
     ]
     if opts.get("facts_entity"):
-        out.append(safe("house.facts", checks.check_house_facts, s, opts["facts_entity"], now))
+        out.append(safe("house.facts", checks.check_house_facts, s_all, opts["facts_entity"], now))
     for rule in opts.get("watch", []):
         if "invalid" in rule:
             out.append(checks.unknown("watch.invalid", f"bad watch entry {rule['invalid']!r}: {rule['error']}"))
             continue
-        out.append(safe(f"watch.{rule['entity']}", checks.check_watched_entity, s, rule, now))
+        out.append(safe(f"watch.{rule['entity']}", checks.check_watched_entity, s_all, rule, now))
     return out
 
 

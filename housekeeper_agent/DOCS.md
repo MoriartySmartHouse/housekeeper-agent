@@ -53,6 +53,7 @@ status when it restarts, so between hourly checks the App looks every few minute
 | `healthchecks_url` | Optional independent check-in URL |
 | `silent_exceptions` | Optional: device names never to report as silent (e.g. something unplugged on purpose) |
 | `zero_power_hours` / `zero_power_exceptions` | When to report a switch that is on at 0 W (default 6 h); switches allowed to sit at 0 W (e.g. a plug whose lamp is off at the lamp) |
+| `maintenance_days` | Days something can carry the **Maintenance** label before Watson reminds you (default 14) |
 | `integration_exceptions` / `log_error_threshold` | Integrations never to report as not working; errors per integration per day before the log is reported (default 10) |
 | `automation_exceptions` | Optional: automation names never to report as "stopped running" (e.g. a seasonal one) |
 | `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
