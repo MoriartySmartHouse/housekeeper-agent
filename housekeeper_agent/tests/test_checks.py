@@ -537,3 +537,44 @@ def test_house_facts_missing_empty_or_stale():
     old = [{"entity_id": "sensor.house_facts", "state": "2026-10-10",
             "attributes": {"heating": {"min_per_hdd_7d": 7.9}}}]
     assert checks.check_house_facts(old, "sensor.house_facts", now)["status"] == checks.WARN
+
+
+# ---- 0.1.12: Maintenance / Keep on labels; a stale low battery is "stopped reporting", not "0 %"
+
+def _bat(eid, pct, dev, reported_h):
+    return {"entity_id": eid, "state": str(pct), "last_reported": iso(reported_h),
+            "attributes": {"device_class": "battery", "unit_of_measurement": "%", "friendly_name": eid}}
+
+
+def test_low_battery_on_a_device_that_stopped_reporting_is_not_a_fail():
+    reg = [{"entity_id": "sensor.garage_battery", "device_id": "g", "platform": "mqtt"},
+           {"entity_id": "sensor.garage_temp", "device_id": "g", "platform": "mqtt"},
+           {"entity_id": "sensor.lock_battery", "device_id": "l", "platform": "zha"},
+           {"entity_id": "sensor.lock_state", "device_id": "l", "platform": "zha"}]
+    states = [_bat("sensor.garage_battery", 0, "g", 30),
+              {"entity_id": "sensor.garage_temp", "state": "15", "last_reported": iso(30)},
+              _bat("sensor.lock_battery", 50, "l", 200),           # battery unchanged for days: normal
+              {"entity_id": "sensor.lock_state", "state": "ok", "last_reported": iso(1)}]
+    c = checks.check_batteries(states, reg, now=NOW)
+    assert c["status"] == "WARN" and "stopped reporting" in c["reason"] and "last read 0 %" in c["reason"]
+    states[1]["last_reported"] = iso(1)                            # the garage sensor is talking: 0 % is real
+    assert checks.check_batteries(states, reg, now=NOW)["status"] == "FAIL"
+
+
+def test_labels_cover_a_device_or_a_single_entity():
+    reg = [{"entity_id": "switch.a", "device_id": "d1", "labels": []},
+           {"entity_id": "sensor.a_power", "device_id": "d1", "labels": []},
+           {"entity_id": "switch.b", "device_id": "d2", "labels": ["maintenance"]},
+           {"entity_id": "switch.c", "device_id": "d3", "labels": []}]
+    devs = [{"id": "d1", "name": "Garage Indoor 1", "labels": ["maintenance"]}, {"id": "d2", "labels": []},
+            {"id": "d3", "labels": []}]
+    assert checks.labelled(reg, devs, "maintenance") == {"switch.a", "sensor.a_power", "switch.b"}
+    mem = {}
+    c = checks.check_maintenance(reg, devs, [], NOW, mem)
+    assert c["status"] == "PASS" and "2 in maintenance" in c["reason"] and "Garage Indoor 1" in c["reason"]
+    later = NOW + timedelta(days=15)
+    c = checks.check_maintenance(reg, devs, [], later, mem)
+    assert c["status"] == "WARN" and "over 14 d" in c["reason"]
+    devs[0]["labels"] = []                                          # label taken off: forgotten, not remembered
+    checks.check_maintenance(reg, devs, [], later, mem)
+    assert not any(k.startswith("device:") for k in mem)

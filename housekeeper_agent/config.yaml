@@ -1,5 +1,5 @@
 name: Housekeeper Agent
-version: "0.1.11"
+version: "0.1.12"
 slug: housekeeper_agent
 description: Hourly read-only health check of this home; reports to the Housekeeper service.
 url: https://github.com/MoriartySmartHouse/housekeeper-agent
@@ -28,6 +28,7 @@ options:
   automation_exceptions: []
   zero_power_hours: 6
   zero_power_exceptions: []
+  maintenance_days: 14
   integration_exceptions: []
   log_error_threshold: 10
   watch_entities: []
@@ -47,6 +48,7 @@ schema:
   automation_exceptions:
     - str
   zero_power_hours: int(1,168)
+  maintenance_days: int(1,365)
   zero_power_exceptions:
     - str
   integration_exceptions:

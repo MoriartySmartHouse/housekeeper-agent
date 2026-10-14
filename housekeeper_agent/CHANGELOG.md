@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.12
+- **A Maintenance label for things you're working on.** In Home Assistant, create a label called **Maintenance** and
+  put it on any number of devices or entities (a device's label covers all its entities). While it is on, Watson
+  leaves them out of the device and automation checks (silent, battery, dropping off, drawing nothing, stopped
+  automations) and lists them instead: "3 in maintenance (not checked)". After 14 days (setting *Days in maintenance
+  before a reminder*) it reminds you to fix them or take the label off, so nothing stays parked forever.
+- **A Keep on label for outlets that may sit at 0 W** (a charger, a low-draw sensor): never reported as "switched on
+  but drawing nothing".
+- **A low battery on a device that stopped reporting is no longer "0 %".** Its last number is old news: Watson now
+  says "not heard for 1 d, last read 0 %" as a warning, never a red. The usual fix is a re-pair, not a battery.
+
 ## 0.1.11
 - **Alarms between checks are no longer missed.** Watson checks once an hour, so an alarm that went off and
   cleared in between never showed. If your home has alarm processes (entities labelled `alarm_process`), the App now

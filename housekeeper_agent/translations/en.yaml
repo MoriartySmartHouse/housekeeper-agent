@@ -30,6 +30,11 @@ configuration:
     name: Automations to ignore
     description: >-
       Automation names (or automation.* ids) never to report as "stopped firing" — e.g. a seasonal one.
+  maintenance_days:
+    name: Days in maintenance before a reminder
+    description: >-
+      Anything you give the Maintenance label in Home Assistant is left out of the checks while you work on it. After
+      this many days it is listed as a reminder to fix it or take the label off.
   zero_power_hours:
     name: Hours on at 0 W before reporting
     description: >-
