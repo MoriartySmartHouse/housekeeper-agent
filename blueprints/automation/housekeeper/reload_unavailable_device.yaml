@@ -58,6 +58,11 @@ conditions:
     value_template: >-
       {{ is_state(target, 'unavailable')
          and (now() - states[target].last_changed).total_seconds() >= minutes * 60 }}
+  # Maintenance (HA label, on the entity or its device): someone is working on it - leave it alone.
+  - condition: template
+    value_template: >-
+      {% set dev = device_id(target) %}
+      {{ 'maintenance' not in (labels(target) or []) + ((labels(dev) or []) if dev else []) }}
   - condition: template
     value_template: >-
       {% set entry = config_entry_id(target) %}

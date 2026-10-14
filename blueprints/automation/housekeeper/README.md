@@ -12,7 +12,8 @@ acts - these run in your own Home Assistant, only where you install them.
 
 **Rules every one follows:** one try per cooldown (no loops); it checks the result and writes one logbook line
 `Watson self-heal | <target>: fixed|still down - <what it did>`. Only `turn_off_idle_outlets` switches anything,
-and only **off**, never an outlet labelled **Keep on** or **Maintenance**, and only after re-checking the meter. The device blueprint
+and only **off**, never an outlet labelled **Keep on** or **Maintenance**, and only after re-checking the meter.
+None of them touches anything labelled **Maintenance** (on the entity or its device). The device blueprint
 cannot pick locks, climate, alarms, valves, sirens or water heaters, and refuses whole-mesh integrations (MQTT /
 Zigbee2MQTT, ZHA, Z-Wave, deCONZ, Matter) - reloading those drops every device on the mesh at once, so use the App
 restart blueprint for them instead.
