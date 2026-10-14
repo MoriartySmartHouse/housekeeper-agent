@@ -30,4 +30,5 @@ Review each HA release's "Backward-incompatible changes" against this list.
 | 24 | Core WS | `history/history_during_period` (24 h, `minimal_response`, `no_attributes`) for the `alarm_process` entities | `{entity_id: [{"s", "lu", "lc"?}]}`; states `Normal` / `Warn` / `Fault` / `Critical` / `Tripped` | alarms.events |
 | 25 | Core WS | `logbook/get_events` (`start_time` = last good read, `end_time` = now) | `name`, `message`, `when` (epoch or ISO) | alarms.events (messages; second witness, LL-24) |
 | 26 | Conventions | `script.estate_alarm_notify` logs name `Alarm: <Process>`, message `<WARN\|FAULT\|CRITICAL\|TRIP\|CLEAR> - <text>`; process key = name lower-cased, spaces/hyphens -> `_` = the `<key>_status` entity | | alarms.events |
+| 27 | Conventions | the self-heal blueprints (`blueprints/automation/housekeeper/`) log name `Watson self-heal`, message `<target>: <fixed\|still down> - <what it did>` (`logbook/get_events`, row 25; reused when the alarm read ran) | `when`, `name`, `message` | selfheal.events |
 | 17 | Conventions | `automation.*` state `on`/`off`/`unavailable`, attribute `last_triggered` (ISO or null), `friendly_name` | | automations.stopped |
