@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.16
+- **Watson's sensor carries the detail.** New attribute `checks` on `sensor.housekeeper_status`: each concern with its
+  devices, how long, and what is parked, so a dashboard can show more than the one-liner. It stays in your Home
+  Assistant and is not sent anywhere new.
+- **Parked on purpose.** Next to **Maintenance**, add a label named **Parked until 2027-05-01** (any date) to something
+  seasonal: no reminder up to that date, one the day after. Without it the 14-day reminder works as before.
+
 ## 0.1.15
 - **Log errors name the whole device.** A multi-word name ("Living Room 1") was cut to its first word.
 

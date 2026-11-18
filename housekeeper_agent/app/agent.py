@@ -25,13 +25,14 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.15"
+VERSION = "0.1.16"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
 OPTIONS_FILE = "/data/options.json"
 MEMORY_FILE = "/data/memory.json"
 STATUS_ENTITY = "sensor.housekeeper_status"
+DETAIL_ITEMS, DETAIL_NAME_CHARS, DETAIL_MAX_BYTES = 12, 60, 6000   # the sensor's `checks` attribute stays small
 CORE_RETRY_S = 60
 STATUS_WATCH_S = 180   # between runs: is our sensor still there? (an HA restart wipes it)
 MIN_KEY_LEN = 32
@@ -338,10 +339,75 @@ def household_list(reply, results):
             if r.get("household") and r.get("status") in (checks.WARN, checks.FAIL)]
 
 
+def detail_items(check):
+    """The named things behind one check, for the `checks` attribute: [{name, days?, detail?, until?, over?}]."""
+    ev = check.get("evidence") or {}
+
+    def rows(key):
+        return [x for x in ev.get(key) or [] if isinstance(x, dict) and x.get("name")]
+
+    cid, out = check.get("id"), []
+    if cid == "devices.silent":
+        out = [{"name": x["name"], "days": round(x["silent_h"] / 24, 1)} for x in rows("silent")]
+        out += [{"name": x["name"], "days": round(x["h"] / 24, 1)} for x in rows("not_heard")]
+    elif cid == "devices.battery":
+        out = [{"name": x["name"], "detail": f"{x['pct']:.0f} %"} for x in rows("low")]
+        out += [{"name": x["name"], "days": round(x["h"] / 24, 1), "detail": f"last read {x['last_pct']:.0f} %"}
+                for x in rows("not_heard")]
+    elif cid == "devices.flapping":
+        out = [{"name": x["name"], "detail": f"dropped off {x['drops_24h']}x in 24 h"} for x in rows("flapping")]
+    elif cid == "devices.zero_power":
+        out = [{"name": x["name"], "days": round(x["hours"] / 24, 1), "detail": "on at 0 W"}
+               for x in rows("zero_power")]
+    elif cid == "automations.stopped":
+        out = [{"name": x["name"], "days": x["silent_d"]} for x in rows("stopped")]
+        out += [{"name": str(n), "detail": "not loaded"} for n in ev.get("unavailable") or []]
+    elif cid == "ha.integrations":
+        out = [{"name": x["name"], "detail": str(x.get("state", "")).replace("_", " ")} for x in rows("failing")]
+    elif cid == "ha.repairs":
+        out = [{"name": str(n)} for n in ev.get("issues") or []]
+    elif cid == "ha.log_errors":
+        out = [{"name": str(n), "detail": f"{c} errors in 24 h"} for n, c in (ev.get("by_integration") or {}).items()]
+    elif cid == checks.MAINTENANCE_CHECK:
+        out = [{k: x[k] for k in ("name", "days", "until", "over") if k in x} for x in rows("parked")]
+    return out
+
+
+def check_details(reply, results):
+    """What is behind Watson's one-liners, for the sensor's `checks` attribute (the board's House health panel): every
+    check that is not PASS, plus what is parked. Stays in this house's HA. `silenced` = central has an exception or a
+    snooze on it. Bounded, because HA's recorder refuses attributes over 16 KB: the longest lists lose items first."""
+    told = reply.get("household") if isinstance(reply, dict) else None
+    told = [str(m)[:300] for m in told] if isinstance(told, list) else None
+    rank = {checks.FAIL: 0, checks.WARN: 1, checks.UNKNOWN: 2}
+    out = []
+    for c in sorted(results, key=lambda r: rank.get(r.get("status"), 3)):
+        items = detail_items(c)
+        if c.get("status") == checks.PASS and not (c.get("id") == checks.MAINTENANCE_CHECK and items):
+            continue
+        shown = [{**i, "name": str(i["name"])[:DETAIL_NAME_CHARS]} for i in items[:DETAIL_ITEMS]]
+        out.append({"id": c.get("id"), "status": c.get("status"),
+                    "household": str(c["household"])[:200] if c.get("household") else None,
+                    "reason": str(c.get("reason") or "")[:240],
+                    "silenced": bool(told is not None and c.get("household") and c.get("audience") == "household"
+                                     and c.get("status") in (checks.WARN, checks.FAIL)
+                                     and str(c["household"])[:300] not in told),
+                    "items": shown, "more": len(items) - len(shown)})
+    while len(json.dumps(out)) > DETAIL_MAX_BYTES:
+        longest = max(out, key=lambda c: len(c["items"]))
+        if longest["items"]:
+            longest["items"].pop()
+            longest["more"] += 1
+        else:
+            out.pop()                                   # nothing left to trim: drop the least urgent check
+    return out
+
+
 def house_status(reply, results, persona="Watson", idle_outlets=None):
     """Our sensor's state + attributes, so the household sees their house assistant's status in HA.
     `idle_outlets`: outlets on at ~0 W for hours (not Keep on / Maintenance), for the house's own turn-off self-heal
-    (blueprint `turn_off_idle_outlets`) to act on. The App only lists them; Home Assistant decides and switches."""
+    (blueprint `turn_off_idle_outlets`) to act on. The App only lists them; Home Assistant decides and switches.
+    `checks`: the detail behind `messages` (check_details)."""
     messages = household_list(reply, results)
     state = "attention" if messages else "all_good"
     summary = "all good" if not messages else f"{len(messages)} things need attention"
@@ -356,6 +422,7 @@ def house_status(reply, results, persona="Watson", idle_outlets=None):
         "central_reached": reply is not None,
         "idle_outlets": [{"switch": k, "meter": v["meter"], "hours": v["hours"]}
                          for k, v in sorted((idle_outlets or {}).items())][:30],
+        "checks": check_details(reply, results),
     }}
     return body
 

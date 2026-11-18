@@ -228,3 +228,44 @@ def test_rarely_used_label_keeps_an_automation_off_the_stopped_list():
     reg[0]["labels"] = ["rarely_used"]
     out = {c["id"]: c for c in agent.run_checks(data, {"watch": []}, NOW, mem)}
     assert out["automations.stopped"]["status"] == "PASS"
+
+
+def _chk(cid, status, household=None, **ev):
+    return checks.result(cid, status, f"{cid} reason", household, "household" if household else "operator", ev)
+
+
+def test_sensor_lists_each_concern_with_its_items_worst_first():
+    res = [_chk("core.reachable", "PASS"),
+           _chk("devices.silent", "WARN", "1 device stopped.",
+                silent=[{"name": "Garage", "silent_h": 48}], not_heard=[]),
+           _chk("system.disk", "FAIL"),
+           _chk("devices.battery", "UNKNOWN")]
+    got = agent.house_status({"household": ["1 device stopped."]}, res)["attributes"]["checks"]
+    assert [c["id"] for c in got] == ["system.disk", "devices.silent", "devices.battery"]
+    assert got[1]["items"] == [{"name": "Garage", "days": 2.0}] and got[1]["silenced"] is False
+    assert got[1]["household"] == "1 device stopped." and got[0]["household"] is None
+
+
+def test_sensor_marks_what_central_silenced_only_when_central_answered():
+    res = [_chk("devices.silent", "WARN", "1 device stopped.", silent=[], not_heard=[])]
+    assert agent.check_details({"household": []}, res)[0]["silenced"] is True
+    assert agent.check_details(None, res)[0]["silenced"] is False
+
+
+def test_sensor_lists_parked_things_even_when_the_check_passes():
+    ok = [_chk("devices.maintenance", "PASS", parked=[{"name": "Sauna", "days": 3.0, "over": False,
+                                                        "until": "2027-05-01"}])]
+    assert agent.check_details(None, ok)[0]["items"] == [
+        {"name": "Sauna", "days": 3.0, "until": "2027-05-01", "over": False}]
+    assert agent.check_details(None, [_chk("devices.maintenance", "PASS", parked=[])]) == []
+
+
+def test_sensor_detail_stays_small_and_counts_what_it_dropped():
+    many = [{"name": "N" * 200, "silent_h": 30} for _ in range(40)]
+    res = [_chk(f"watch.{i}", "WARN") for i in range(5)] + [_chk("devices.silent", "WARN", silent=many, not_heard=[])]
+    got = agent.check_details(None, res)
+    assert len(json.dumps(got)) <= agent.DETAIL_MAX_BYTES
+    s = next(c for c in got if c["id"] == "devices.silent")
+    assert len(s["items"]) == agent.DETAIL_ITEMS and s["more"] == 28 and len(s["items"][0]["name"]) == 60
+    huge = [_chk(f"watch.{i}", "WARN") for i in range(200)]
+    assert len(json.dumps(agent.check_details(None, huge))) <= agent.DETAIL_MAX_BYTES

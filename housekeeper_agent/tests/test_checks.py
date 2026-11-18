@@ -648,3 +648,25 @@ def test_log_subject_keeps_multi_word_names():
     msgs = ["Error fetching Living Room 1 data: Failed to update device at 192.168.0.12: ",
             "Error fetching 192.168.0.117 data: Unable to communicate with the device update"]
     assert checks._log_subjects(msgs) == ["Living Room 1", ".117"]
+
+
+def test_parked_until_label_replaces_the_reminder_until_its_date():
+    devs = [{"id": "s", "name": "Sauna", "labels": ["maintenance", "parked_until_2027_05_01"]},
+            {"id": "g", "name": "Garage", "labels": ["maintenance"]},
+            {"id": "x", "name": "Bad date", "labels": ["maintenance", "parked_until_2027_13_01"]}]
+    mem = {}
+    checks.check_maintenance([], devs, [], NOW, mem)
+    c = checks.check_maintenance([], devs, [], NOW + timedelta(days=30), mem)
+    parked = {p["name"]: p for p in c["evidence"]["parked"]}
+    assert c["status"] == "WARN" and "Sauna" not in c["reason"] and "Garage" in c["reason"]
+    assert parked["Sauna"]["until"] == "2027-05-01" and parked["Sauna"]["over"] is False
+    assert parked["Garage"]["over"] is True and "until" not in parked["Garage"]
+    assert parked["Bad date"]["over"] is True and "until" not in parked["Bad date"]   # a typo never silences
+
+
+def test_parked_until_reminds_the_day_after_and_not_on_the_day():
+    devs = [{"id": "s", "name": "Sauna", "labels": ["maintenance", "parked_until_2030_05_01"]}]
+    on_day = datetime(2030, 5, 1, 12, tzinfo=UTC)
+    assert checks.check_maintenance([], devs, [], on_day, {})["status"] == "PASS"
+    c = checks.check_maintenance([], devs, [], on_day + timedelta(days=1), {})     # first seen today: the date decides
+    assert c["status"] == "WARN" and "past their" in c["household"] and c["evidence"]["parked"][0]["over"] is True

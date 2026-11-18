@@ -9,7 +9,7 @@ never PASS. A breaking HA change must look like a grey check, not a healthy hous
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
 PASS, WARN, FAIL, UNKNOWN = "PASS", "WARN", "FAIL", "UNKNOWN"
@@ -860,9 +860,12 @@ def alarm_process_key(name):
     return str(name).strip().lower().replace(" ", "_").replace("-", "_")
 
 
+MAINTENANCE_CHECK = "devices.maintenance"
 MAINTENANCE_LABEL = "maintenance"   # HA label "Maintenance": known, being worked on, don't report it
 KEEP_ON_LABEL = "keep_on"           # HA label "Keep on": an outlet that may sit on at 0 W (never flagged, never cut)
 RARELY_USED_LABEL = "rarely_used"   # HA label "Rarely used": an automation that may go quiet for weeks (guest room)
+# HA label "Parked until 2027-05-01", next to Maintenance: parked on purpose (a sauna in summer), no reminder yet.
+PARKED_UNTIL_LABEL = re.compile(r"^parked_until_(\d{4})_(\d{2})_(\d{2})$")
 
 
 def labelled(entity_registry, device_registry, label):
@@ -875,22 +878,39 @@ def labelled(entity_registry, device_registry, label):
             and (label in (e.get("labels") or []) or (e.get("device_id") and e.get("device_id") in devs))}
 
 
+def parked_until(labels):
+    """The latest date in any "Parked until YYYY-MM-DD" label (HA's label id: parked_until_yyyy_mm_dd), else None."""
+    dates = []
+    for label in labels or []:
+        m = PARKED_UNTIL_LABEL.match(label) if isinstance(label, str) else None
+        if m:
+            try:
+                dates.append(date(*map(int, m.groups())))
+            except ValueError:
+                pass
+    return max(dates, default=None)
+
+
 def check_maintenance(entity_registry, device_registry, states, now, memory=None, max_days=14):
     """What the household has parked with the Maintenance label. Parked things are left out of the device and
     automation checks, so this check keeps them from being forgotten: listed every time, WARN once any has been
-    parked longer than `max_days` (like an exception that runs out). `memory` = {key: iso first seen}."""
-    cid = "devices.maintenance"
+    parked longer than `max_days` (like an exception that runs out). A "Parked until <date>" label next to it replaces
+    that limit with the date: no reminder up to and including it, a reminder right after. `memory` = {key: iso first
+    seen}."""
+    cid = MAINTENANCE_CHECK
     if not isinstance(entity_registry, list) or not isinstance(device_registry, list):
         return unknown(cid, "entity / device registry not readable")
     memory = {} if memory is None else memory
-    names = {}
+    names, until = {}, {}
     for d in device_registry:
         if isinstance(d, dict) and MAINTENANCE_LABEL in (d.get("labels") or []):
             names[f"device:{d.get('id')}"] = d.get("name_by_user") or d.get("name") or d.get("id")
+            until[f"device:{d.get('id')}"] = parked_until(d.get("labels"))
     friendly = {s.get("entity_id"): (s.get("attributes") or {}).get("friendly_name") for s in states or []}
     for e in entity_registry:
         if isinstance(e, dict) and MAINTENANCE_LABEL in (e.get("labels") or []):
             names[f"entity:{e.get('entity_id')}"] = friendly.get(e.get("entity_id")) or e.get("entity_id")
+            until[f"entity:{e.get('entity_id')}"] = parked_until(e.get("labels"))
     for k in [k for k in memory if k not in names]:
         memory.pop(k)
     ages = {}
@@ -902,14 +922,21 @@ def check_maintenance(entity_registry, device_registry, states, now, memory=None
         since = since or now
         memory[k] = since.isoformat()
         ages[k] = (now - since).total_seconds() / 86400
-    ev = {"parked": [{"name": names[k], "days": round(ages[k], 1)} for k in sorted(names, key=lambda k: -ages[k])]}
+    today = now.date()
+    late = {k for k in names if until[k] and today > until[k]}
+    over = sorted((k for k in names if k in late or (not until[k] and ages[k] > max_days)), key=lambda k: -ages[k])
+    ev = {"parked": [{"name": names[k], "days": round(ages[k], 1), "over": k in over,
+                      **({"until": until[k].isoformat()} if until[k] else {})}
+                     for k in sorted(names, key=lambda k: -ages[k])]}
     if not names:
         return result(cid, PASS, "nothing in maintenance", evidence=ev)
-    over = sorted((k for k in names if ages[k] > max_days), key=lambda k: -ages[k])
     if over:
         listed = ", ".join(f"{names[k]} ({ages[k]:.0f} d)" for k in over[:5])
-        return result(cid, WARN, f"{len(over)} in maintenance over {max_days} d: {listed}; fix or take the label off",
-                      f"{len(over)} thing(s) have been in maintenance for over {max_days} days.", "household", ev)
+        limit = f"past their date or over {max_days} d" if late else f"over {max_days} d"
+        told = (f"are past their parked date or have been in maintenance for over {max_days} days" if late
+                else f"have been in maintenance for over {max_days} days")
+        return result(cid, WARN, f"{len(over)} in maintenance {limit}: {listed}; fix or take the label off",
+                      f"{len(over)} thing(s) {told}.", "household", ev)
     listed = ", ".join(names[k] for k in list(names)[:8])
     return result(cid, PASS, f"{len(names)} in maintenance (not checked): {listed}", evidence=ev)
 
