@@ -627,6 +627,22 @@ def test_selfheal_check_reports_fixes_warns_on_failures_and_remembers():
     assert mem["entries"] == []                                         # older than 24 h: forgotten
 
 
+def test_selfheal_gave_up_line_parsed_and_reported_apart():
+    now = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
+    log = {"events": [_heal("2026-11-19T02:17:00+00:00", "Kitchen3: still down - reloaded its integration"),
+                      _heal("2026-11-19T09:17:00+00:00", "Kitchen3: gave up - down 72 h, needs a hand"),
+                      _heal("2026-11-19T10:00:00+00:00", "Bed strip: still down - reloaded its integration"),
+                      _heal("2026-11-19T11:00:00+00:00", "Plug 2: fixed - reloaded its integration")],
+           "to": now.isoformat()}
+    assert checks.selfheal_log_entries(log["events"])[1] == [
+        "2026-11-19T09:17:00+00:00", "Kitchen3", "gave up", "down 72 h, needs a hand"]
+    r = checks.check_selfheal_events(log, now, {})
+    assert r["status"] == "WARN"
+    assert r["reason"] == ("self-heal gave up on: Kitchen3 (needs a hand); "
+                           "self-heal tried and could not fix: Bed strip; fixed: Plug 2")
+    assert [h["result"] for h in r["evidence"]["heals"]] == ["still down", "gave up", "still down", "fixed"]
+
+
 # ---- 0.1.14: log errors name the device; 'Rarely used' automations
 
 def test_log_errors_name_the_device_not_the_text():

@@ -9,6 +9,13 @@ blueprint:
     Safe by design: restarting an App never switches a device; the cooldown stops restart loops. If the restart
     does not help (for example the coordinator itself is unplugged), the record says "still down" and the morning
     summary asks you.
+
+
+    Backs off: each restart waits at least as long as the App had already been down at the previous one (about
+    5 min, 1 h, 2 h, 4 h, ... with the defaults), and once it has been down longer than "Give up after" it writes one
+    last record ("gave up - needs a hand") and leaves it alone until it has come back. The down time is read from
+    the health sensor, so pick one that keeps a single bad value while the App restarts (if it moves from one bad
+    value to another, the ladder starts over and it behaves like a plain cooldown).
   domain: automation
   source_url: https://github.com/MoriartySmartHouse/housekeeper-agent/blob/main/blueprints/automation/housekeeper/restart_app_when_down.yaml
   input:
@@ -41,9 +48,16 @@ blueprint:
         number: {min: 2, max: 120, unit_of_measurement: min}
     cooldown_hours:
       name: At most one restart every
+      description: The shortest gap between two restarts; later gaps double (see above).
       default: 1
       selector:
         number: {min: 1, max: 48, unit_of_measurement: h}
+    give_up_hours:
+      name: Give up after
+      description: Down longer than this - stop restarting, record "gave up" once, and wait for it to come back.
+      default: 72
+      selector:
+        number: {min: 6, max: 720, unit_of_measurement: h}
     check_after:
       name: Check the result after
       default: 180
@@ -60,6 +74,16 @@ variables:
   label: !input label
   minutes: !input minutes
   cooldown_h: !input cooldown_hours
+  give_up_h: !input give_up_hours
+  # Seconds the health sensor has read a bad value (0 when it does not).
+  down_s: >-
+    {{ (as_timestamp(now()) - as_timestamp(states[health].last_changed)) | round(0)
+       if states[health] is not none and states(health) in bad else 0 }}
+  # Seconds since this automation last acted (a restart or the give-up record), or none.
+  since_last: >-
+    {%- set last = this.attributes.last_triggered if this else none -%}
+    {{ (as_timestamp(now()) - as_timestamp(last)) | round(0) if last else none }}
+  give_up: "{{ down_s >= give_up_h * 3600 }}"
 
 triggers:
   - trigger: state
@@ -78,22 +102,37 @@ conditions:
     value_template: >-
       {% set dev = device_id(health) %}
       {{ 'maintenance' not in (labels(health) or []) + ((labels(dev) or []) if dev else []) }}
+  # Back-off ladder: past "give up", act once more only to record it; before that, wait at least the cooldown AND
+  # at least as long as the App had already been down at the previous restart (one before this outage counts as 0).
   - condition: template
     value_template: >-
-      {{ this.attributes.last_triggered is none
-         or (now() - this.attributes.last_triggered).total_seconds() > cooldown_h * 3600 }}
+      {{ since_last is none
+         or (since_last > down_s - give_up_h * 3600 if give_up
+             else since_last > cooldown_h * 3600 and since_last >= down_s - since_last) }}
 
 actions:
-  - action: hassio.addon_restart
-    continue_on_error: true
-    data:
-      addon: "{{ app }}"
-  - delay:
-      seconds: !input check_after
-  - action: logbook.log
-    data:
-      name: Watson self-heal
-      entity_id: "{{ health }}"
-      message: >-
-        {{ (label or state_attr(health, 'friendly_name') or app) | replace(': ', ' ') }}:
-        {{ 'still down' if states(health) in bad else 'fixed' }} - restarted the App
+  - if:
+      - condition: template
+        value_template: "{{ give_up }}"
+    then:
+      - action: logbook.log
+        data:
+          name: Watson self-heal
+          entity_id: "{{ health }}"
+          message: >-
+            {{ (label or state_attr(health, 'friendly_name') or app) | replace(': ', ' ') }}:
+            gave up - down {{ (down_s / 3600) | round(0) | int }} h, needs a hand
+    else:
+      - action: hassio.addon_restart
+        continue_on_error: true
+        data:
+          addon: "{{ app }}"
+      - delay:
+          seconds: !input check_after
+      - action: logbook.log
+        data:
+          name: Watson self-heal
+          entity_id: "{{ health }}"
+          message: >-
+            {{ (label or state_attr(health, 'friendly_name') or app) | replace(': ', ' ') }}:
+            {{ 'still down' if states(health) in bad else 'fixed' }} - restarted the App

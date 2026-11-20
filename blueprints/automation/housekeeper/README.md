@@ -11,7 +11,11 @@ acts - these run in your own Home Assistant, only where you install them.
 | `turn_off_idle_outlets.yaml` | Watson lists outlets on with nothing drawing for 6 h -> turn them off | an empty socket left on |
 
 **Rules every one follows:** one try per cooldown (no loops); it checks the result and writes one logbook line
-`Watson self-heal | <target>: fixed|still down - <what it did>`. Only `turn_off_idle_outlets` switches anything,
+`Watson self-heal | <target>: fixed|still down - <what it did>`. The three reload/restart blueprints also back off:
+each try waits at least as long as the target had already been down (about 5 min, 6 h, 12 h, 24 h, 48 h), and
+past **Give up after** (default 72 h) they write one `<target>: gave up - down <n> h, needs a hand` and stay quiet
+until it has come back; a new outage starts the ladder again. A Home Assistant restart also starts it again (the
+down time is read from the entity's state, which a restart renews). Only `turn_off_idle_outlets` switches anything,
 and only **off**, never an outlet labelled **Keep on** or **Maintenance**, and only after re-checking the meter.
 None of them touches anything labelled **Maintenance** (on the entity or its device). The device blueprint
 cannot pick locks, climate, alarms, valves, sirens or water heaters, and refuses whole-mesh integrations (MQTT /

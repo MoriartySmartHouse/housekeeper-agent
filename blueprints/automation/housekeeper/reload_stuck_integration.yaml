@@ -1,9 +1,15 @@
 blueprint:
   name: "Watson self-heal: reload an integration stuck retrying"
   description: >-
-    When an integration is stuck **retrying setup** (Settings > Devices shows it failing), reload it - once per
-    cooldown - and record whether it came back. Watson (the Housekeeper App) reads that record for the morning
-    summary.
+    When an integration is stuck **retrying setup** (Settings > Devices shows it failing), reload it and record
+    whether it came back. Watson (the Housekeeper App) reads that record for the morning summary.
+
+
+    Backs off: each try waits at least as long as the integration had already been down at the previous one
+    (about 15 min, 6 h, 12 h, 24 h, 48 h with the defaults), and once it has been down longer than "Give up after"
+    it writes one last record ("gave up - needs a hand") and leaves it alone until it has come back. The down time
+    is read from the integration's own entities (they turn unavailable with it); an integration that has never
+    loaded has none, and then it is simply one try per cooldown.
 
 
     Safe by design: a reload never switches anything. Whole-mesh integrations (MQTT / Zigbee2MQTT, ZHA, Z-Wave)
@@ -17,9 +23,16 @@ blueprint:
         config_entry: {}
     cooldown_hours:
       name: At most one try every
+      description: The shortest gap between two tries; later gaps double (see above).
       default: 6
       selector:
         number: {min: 1, max: 48, unit_of_measurement: h}
+    give_up_hours:
+      name: Give up after
+      description: Down longer than this - stop trying, record "gave up" once, and wait for it to come back.
+      default: 72
+      selector:
+        number: {min: 6, max: 720, unit_of_measurement: h}
     check_after:
       name: Check the result after
       default: 90
@@ -32,7 +45,25 @@ max_exceeded: silent
 variables:
   entry: !input entry
   cooldown_h: !input cooldown_hours
+  give_up_h: !input give_up_hours
   mesh: [mqtt, zha, zwave_js, deconz, matter]
+  # Seconds the integration has been down, from its entities: when it fails they are all rewritten "unavailable",
+  # so the LATEST of their last_changed is when it went down (an entity that was already dead keeps an older one).
+  # A reload of a stuck entry changes none of them. 0 when it has no unavailable entity (never loaded).
+  down_s: >-
+    {%- set ns = namespace(at=none) -%}
+    {%- for e in integration_entities(config_entry_attr(entry, 'title') or '') -%}
+      {%- if config_entry_id(e) == entry and is_state(e, 'unavailable') -%}
+        {%- set t = as_timestamp(states[e].last_changed) -%}
+        {%- if ns.at is none or t > ns.at %}{% set ns.at = t %}{% endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ (as_timestamp(now()) - ns.at) | round(0) if ns.at is not none else 0 }}
+  # Seconds since this automation last acted (a try or the give-up record), or none.
+  since_last: >-
+    {%- set last = this.attributes.last_triggered if this else none -%}
+    {{ (as_timestamp(now()) - as_timestamp(last)) | round(0) if last else none }}
+  give_up: "{{ down_s >= give_up_h * 3600 }}"
 
 triggers:
   - trigger: time_pattern
@@ -45,22 +76,36 @@ conditions:
                                                         'ConfigEntryState.SETUP_RETRY', 'ConfigEntryState.SETUP_ERROR']
          and config_entry_attr(entry, 'domain') not in mesh
          and not config_entry_attr(entry, 'disabled_by') }}
+  # Back-off ladder: past "give up", act once more only to record it; before that, wait at least the cooldown AND
+  # at least as long as the integration had already been down at the previous try (one before this outage = 0).
   - condition: template
     value_template: >-
-      {{ this.attributes.last_triggered is none
-         or (now() - this.attributes.last_triggered).total_seconds() > cooldown_h * 3600 }}
+      {{ since_last is none
+         or (since_last > down_s - give_up_h * 3600 if give_up
+             else since_last > cooldown_h * 3600 and since_last >= down_s - since_last) }}
 
 actions:
-  - action: homeassistant.reload_config_entry
-    continue_on_error: true
-    data:
-      entry_id: "{{ entry }}"
-  - delay:
-      seconds: !input check_after
-  - action: logbook.log
-    data:
-      name: Watson self-heal
-      message: >-
-        {{ (config_entry_attr(entry, 'title') or entry) | replace(': ', ' ') }}:
-        {{ 'fixed' if config_entry_attr(entry, 'state') | string in ['loaded', 'ConfigEntryState.LOADED']
-           else 'still down' }} - reloaded the integration
+  - if:
+      - condition: template
+        value_template: "{{ give_up }}"
+    then:
+      - action: logbook.log
+        data:
+          name: Watson self-heal
+          message: >-
+            {{ (config_entry_attr(entry, 'title') or entry) | replace(': ', ' ') }}:
+            gave up - down {{ (down_s / 3600) | round(0) | int }} h, needs a hand
+    else:
+      - action: homeassistant.reload_config_entry
+        continue_on_error: true
+        data:
+          entry_id: "{{ entry }}"
+      - delay:
+          seconds: !input check_after
+      - action: logbook.log
+        data:
+          name: Watson self-heal
+          message: >-
+            {{ (config_entry_attr(entry, 'title') or entry) | replace(': ', ' ') }}:
+            {{ 'fixed' if config_entry_attr(entry, 'state') | string in ['loaded', 'ConfigEntryState.LOADED']
+               else 'still down' }} - reloaded the integration

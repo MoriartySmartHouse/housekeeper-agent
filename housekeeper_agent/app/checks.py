@@ -1163,9 +1163,10 @@ def check_alarm_events(states, entities, history, logbook, now, memory=None, sha
 # Each attempt writes ONE logbook line:  name "Watson self-heal",  message "<target>: <result> - <what it did>",
 # result "fixed" or "still down". This check collects those lines (incrementally, like the alarm lines) so central
 # can say "Watson fixed X at 03:12" instead of asking, and "Watson already tried" when it did not work.
+# The blueprints back off (doubling gaps) and finally write one "<target>: gave up - down <n> h, needs a hand".
 
 SELFHEAL_NAME = "Watson self-heal"
-SELFHEAL_RESULTS = ("fixed", "still down")
+SELFHEAL_RESULTS = ("fixed", "still down", "gave up")
 SELFHEAL_KEEP = 200
 
 
@@ -1215,11 +1216,13 @@ def check_selfheal_events(logbook, now, memory=None):
     note = "" if read_ok else "; logbook not read this run"
     if not heals:
         return result(cid, PASS, f"no self-heals in {ALARM_WINDOW_H} h{note}", evidence=ev)
-    failed = [h for h in heals if h["result"] != "fixed"]
     fixed = [h for h in heals if h["result"] == "fixed"]
     listed = ", ".join(sorted({h["target"] for h in fixed}))
-    if failed:
-        tried = ", ".join(sorted({h["target"] for h in failed}))
-        return result(cid, WARN, f"self-heal tried and could not fix: {tried}"
-                      + (f"; fixed: {listed}" if listed else "") + note, evidence=ev)
+    gave_up = {h["target"] for h in heals if h["result"] == "gave up"}
+    failed = {h["target"] for h in heals if h["result"] == "still down"} - gave_up
+    if gave_up or failed:
+        parts = ([f"self-heal gave up on: {', '.join(sorted(gave_up))} (needs a hand)"] if gave_up else []) \
+            + ([f"self-heal tried and could not fix: {', '.join(sorted(failed))}"] if failed else []) \
+            + ([f"fixed: {listed}"] if listed else [])
+        return result(cid, WARN, ("; ".join(parts) + note)[:500], evidence=ev)
     return result(cid, PASS, f"Watson fixed {len(fixed)} in {ALARM_WINDOW_H} h: {listed}{note}"[:500], evidence=ev)
