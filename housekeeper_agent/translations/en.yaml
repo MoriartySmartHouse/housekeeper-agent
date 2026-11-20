@@ -63,6 +63,13 @@ configuration:
     description: >-
       Include the text of this home's alarms (e.g. "Sump Tripped - level high") in reports, so the daily note can
       say what happened. When off, only which process alarmed, how badly, when and for how long is sent.
+  fix_offers:
+    name: Offer fixes
+    description: >-
+      Let the Housekeeper service offer a one-tap fix (reload a device or integration, switch off an empty outlet)
+      for a few safe problems. Sends the entity ids of those devices and keeps the offers in Watson's sensor
+      (attribute fix_offers); nothing happens unless your Home Assistant has the watson_fix automation and you tap
+      the button. Off by default.
   facts_entity:
     name: House facts sensor (optional)
     description: >-

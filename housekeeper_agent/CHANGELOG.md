@@ -7,6 +7,11 @@
   last line `<target>: gave up - down <n> h, needs a hand` and leave it alone until it comes back. A device that is
   simply gone no longer gets reloaded every 6 hours for days. Re-import the blueprints to get this.
 - **Watson reads the give-up line.** The *Self-heals* check lists "gave up on" apart from "could not fix".
+- **Offer fixes (new option `fix_offers`, off by default).** When on, the device, flapping, integration and 0 W checks
+  list what one safe action could fix (`evidence.fixable`: entity or entry ids, never locks, heating, alarms, valves
+  or Zigbee/Z-Wave/MQTT devices), and Watson's sensor gets the Housekeeper service's offers (attribute `fix_offers`)
+  for the house's `watson_fix` automation to check a tapped button against. The App still never acts; off = nothing
+  new leaves the house and the list stays empty.
 
 ## 0.1.16
 - **Watson's sensor carries the detail.** New attribute `checks` on `sensor.housekeeper_status`: each concern with its

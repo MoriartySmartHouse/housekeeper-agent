@@ -168,6 +168,24 @@ def check_updates(states, integrations=None):
 SILENT_PLATFORMS = ("mqtt", "esphome")
 BAD = ("unavailable", "unknown")
 
+# Fix offers (Watson v2 part 3): a check may list, in evidence["fixable"], what one safe action in the house's own HA
+# could fix: [{kind, entity_id | entry_id | slug, label}]. Watson never acts; central may turn an entry into a button,
+# and HA (packages/watson_fix.yaml) re-checks its own guards before doing anything. agent.py drops the list unless the
+# option fix_offers is on. Same guards as the self-heal blueprints: no mesh integration, nothing that locks, heats,
+# arms or opens.
+FIX_MESH = ("mqtt", "zha", "zwave_js", "deconz", "matter")
+FIX_NEVER_DOMAINS = ("lock", "climate", "alarm_control_panel", "valve", "siren", "water_heater")
+FIX_RELOAD_STATES = ("setup_retry", "setup_error")
+FIX_MAX = 10
+
+
+def fixable_entity(kind, entity_id, label, platform=None):
+    """One fixable entry for an entity, or None when the guards rule it out."""
+    domain = str(entity_id or "").split(".", 1)[0]
+    if not entity_id or not label or platform in FIX_MESH or domain in FIX_NEVER_DOMAINS:
+        return None
+    return {"kind": kind, "entity_id": entity_id, "label": str(label)[:80]}
+
 
 def _newest(sts, field):
     stamps = [t for t in (parse_ts(s.get(field)) for s in sts) if t]
@@ -223,13 +241,14 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
     by_id = {s["entity_id"]: s for s in states if "entity_id" in s}
     names = {d.get("id"): d.get("name_by_user") or d.get("name") for d in device_registry}
     z2m = _z2m_devices(device_registry)
-    devices = {}
+    devices, platform = {}, {}
     for e in entity_registry:
         if e.get("platform") not in SILENT_PLATFORMS or not e.get("device_id") or e.get("disabled_by"):
             continue
         st = by_id.get(e.get("entity_id"))
         if st is not None:
             devices.setdefault(e["device_id"], []).append(st)
+            platform[e["entity_id"]] = e.get("platform")
     silent, stale, watching, no_last_seen = [], [], [], []
     for dev_id, sts in devices.items():
         name = names.get(dev_id) or dev_id
@@ -244,13 +263,13 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
             since = min(candidates) if candidates else now
             memory.setdefault(dev_id, since.isoformat())
             if now - since > timedelta(hours=silent_h):
-                silent.append((name, hours(now - since)))
+                silent.append((name, hours(now - since), dev_id))
             else:
                 watching.append((name, since, hours(now - since)))
             continue
         memory.pop(dev_id, None)
         if seen and now - seen > timedelta(hours=silent_h):
-            silent.append((name, hours(now - seen)))
+            silent.append((name, hours(now - seen), dev_id))
             continue
         # Not unavailable, but nothing heard: with z2m availability off (the default) a dead
         # device keeps its last value forever. last_reported moves on every message received.
@@ -262,19 +281,25 @@ def check_silent_devices(states, entity_registry, device_registry, now, silent_h
     silent.sort(key=lambda x: -x[1])
     stale.sort(key=lambda x: -x[1])
     watching.sort(key=lambda x: -x[2])
+    fixable = []
+    for n, _, dev_id in silent:      # a Wi-Fi (ESPHome) device: reloading its entry is the self-heal's move
+        fix = next((f for f in (fixable_entity("reload_entry", s["entity_id"], n, platform.get(s["entity_id"]))
+                                for s in sorted(devices[dev_id], key=lambda s: s["entity_id"])) if f), None)
+        if fix:
+            fixable.append(fix)
     ev = {"devices_checked": len(devices),
-          "silent": [{"name": n, "silent_h": h} for n, h in silent],
+          "silent": [{"name": n, "silent_h": h} for n, h, _ in silent],
           "not_heard": [{"name": n, "h": h} for n, h in stale],
           "watching_since_restart": len(memory),
           "unavailable_under_threshold": [{"name": n, "since": t.isoformat(), "h": h} for n, t, h in watching[:25]],
-          "zigbee_without_last_seen": sorted(no_last_seen)[:60]}
+          "zigbee_without_last_seen": sorted(no_last_seen)[:60], "fixable": fixable[:FIX_MAX]}
     if not devices:
         return unknown(cid, "no z2m/ESPHome devices found — registry format changed?")
     if stale and not silent:
         listed = ", ".join(f"{n} ({round(h / 24, 1)} d)" for n, h in stale[:5])
         return result(cid, WARN, f"{len(stale)} devices not heard from in > {stale_h} h: {listed}", evidence=ev)
     if silent:
-        listed = ", ".join(f"{n} ({round(h / 24, 1)} d)" for n, h in silent[:5])
+        listed = ", ".join(f"{n} ({round(h / 24, 1)} d)" for n, h, _ in silent[:5])
         return result(cid, WARN, f"{len(silent)} devices silent > {silent_h} h: {listed}",
                       f"{len(silent)} device(s) have stopped reporting and may need a battery or a reset.",
                       "household", ev)
@@ -311,13 +336,15 @@ def _row_time(r):
         return None
 
 
-def check_flapping(history, candidates, min_drops=3, min_drop_s=FLAP_MIN_DROP_S):
+def check_flapping(history, candidates, min_drops=3, min_drop_s=FLAP_MIN_DROP_S, platforms=None):
     """Devices that dropped off (-> unavailable) `min_drops` or more times in the window — e.g. a WiFi plug that
     keeps falling off the network. Each drop is short, so hourly snapshots never see it; history does.
     history = {entity_id: [{"s": state, ...}, ...]} (HA's compressed history/history_during_period).
     A drop shorter than `min_drop_s` is not counted: every HA restart or integration reload marks entities
     unavailable for under a second (2026-10-13: 9 of a Zigbee bulb's 13 'drops' in a week were reload blips; its
-    real drops lasted 16 min and more). Rows without timestamps are counted as before."""
+    real drops lasted 16 min and more). Rows without timestamps are counted as before.
+    `platforms` ({entity_id: integration}, from the registry) lets a flapping Wi-Fi/LAN device be listed as fixable
+    (reload its entry); without it nothing is listed."""
     cid = "devices.flapping"
     if not candidates:
         return result(cid, PASS, "no switch/light-type devices to watch", evidence={"devices_checked": 0})
@@ -338,12 +365,16 @@ def check_flapping(history, candidates, min_drops=3, min_drop_s=FLAP_MIN_DROP_S)
                     drops += 1                 # long enough, still down, or no timestamps to tell
             prev = s
         if drops >= min_drops:
-            flappy.append((candidates[eid], drops))
+            flappy.append((candidates[eid], drops, eid))
     flappy.sort(key=lambda x: -x[1])
-    ev = {"devices_checked": len(candidates), "flapping": [{"name": n, "drops_24h": d} for n, d in flappy]}
+    ev = {"devices_checked": len(candidates), "flapping": [{"name": n, "drops_24h": d} for n, d, _ in flappy]}
+    if platforms is not None:
+        fixes = [fixable_entity("reload_entry", eid, n, platforms[eid]) for n, _, eid in flappy
+                 if platforms.get(eid)]                         # integration unknown: not offered
+        ev["fixable"] = [f for f in fixes if f][:FIX_MAX]
     if not flappy:
         return result(cid, PASS, f"no device dropped off {min_drops}+ times in 24 h", evidence=ev)
-    listed = ", ".join(f"{n} ({d}x)" for n, d in flappy[:5])
+    listed = ", ".join(f"{n} ({d}x)" for n, d, _ in flappy[:5])
     return result(cid, WARN, f"{len(flappy)} device(s) keep dropping off: {listed}", evidence=ev)
 
 
@@ -636,16 +667,17 @@ def check_zero_power(states, entity_registry, now, memory=None, hours_needed=6, 
         memory[eid] = since.isoformat()
         hrs = hours(now - since)
         if hrs >= hours_needed:
-            flagged.append((name, hrs))
+            flagged.append((name, hrs, eid))
             if found is not None:
                 found[eid] = {"meter": meter[0], "hours": hrs}
     for eid in [k for k in memory if k not in seen]:
         memory.pop(eid)
     flagged.sort(key=lambda x: -x[1])
-    ev = {"switches_with_meter": watched, "zero_power": [{"name": n, "hours": h} for n, h in flagged]}
+    ev = {"switches_with_meter": watched, "zero_power": [{"name": n, "hours": h} for n, h, _ in flagged],
+          "fixable": [f for f in (fixable_entity("outlet_off", eid, n) for n, _, eid in flagged) if f][:FIX_MAX]}
     if not flagged:
         return result(cid, PASS, f"{watched} metered switches, none on at 0 W for {hours_needed}+ h", evidence=ev)
-    listed = ", ".join(f"{n} ({_gap_text(h)})" for n, h in flagged[:5])
+    listed = ", ".join(f"{n} ({_gap_text(h)})" for n, h, _ in flagged[:5])
     return result(cid, WARN, f"{len(flagged)} switched on but drawing nothing: {listed}", evidence=ev)
 
 
@@ -663,7 +695,7 @@ def check_integrations(entries, memory=None, exceptions=()):
     if not isinstance(entries, list):
         return unknown(cid, "config_entries/get returned no list")
     memory = {} if memory is None else memory
-    bad, now_failing = [], set()
+    bad, now_failing, fixable = [], set(), []
     active = [e for e in entries if isinstance(e, dict) and e.get("source") != "ignore" and not e.get("disabled_by")]
     for e in active:
         label = f"{e.get('domain', '?')}: {e.get('title') or '?'}"
@@ -674,11 +706,15 @@ def check_integrations(entries, memory=None, exceptions=()):
             now_failing.add(eid)
             if eid in memory:
                 bad.append((label, e.get("state"), memory[eid]))
+                if (e.get("state") in FIX_RELOAD_STATES and e.get("domain") not in FIX_MESH
+                        and isinstance(e.get("entry_id"), str)):
+                    fixable.append({"kind": "reload_stuck", "entry_id": e["entry_id"], "label": label[:80]})
             else:
                 memory[eid] = "seen"
     for eid in [k for k in memory if k not in now_failing]:
         memory.pop(eid)
-    ev = {"integrations": len(active), "failing": [{"name": n, "state": s} for n, s, _ in bad]}
+    ev = {"integrations": len(active), "failing": [{"name": n, "state": s} for n, s, _ in bad],
+          "fixable": sorted(fixable, key=lambda f: f["label"])[:FIX_MAX]}
     if not bad:
         waiting = len(now_failing)    # first sighting only: say so instead of "all loaded" (it isn't)
         if waiting:

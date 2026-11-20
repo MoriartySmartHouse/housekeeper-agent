@@ -58,6 +58,7 @@ status when it restarts, so between hourly checks the App looks every few minute
 | `automation_exceptions` | Optional: automation names never to report as "stopped running" (e.g. a seasonal one) |
 | `watch_entities` | Optional, set by your support person: entities that must not stay in a bad state — entity, bad states (comma-separated), minutes |
 | `watch` | Older JSON format of the same, still accepted |
+| `fix_offers` | Off by default. When on, the App also sends the entity ids (or integration entry ids) of a few problems one safe action could fix — a Wi-Fi device or integration to reload, an outlet on at 0 W to switch off — and writes the Housekeeper service's offers into Watson's sensor (attribute `fix_offers`). Your support person's morning push then has a button; Home Assistant acts only if it has the `watson_fix` automation and someone taps it. Locks, heating, alarms, valves and Zigbee/Z-Wave/MQTT devices are never offered. Turning it off empties the list, so every button stops working |
 
 `central_url` must be `https://`; plain `http://` is accepted only for a private or Tailscale address.
 The App refuses to start (and says why in its log) if a required setting is blank or invalid.

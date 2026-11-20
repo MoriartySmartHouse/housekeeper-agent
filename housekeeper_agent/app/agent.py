@@ -13,6 +13,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import time
@@ -286,7 +287,9 @@ def run_checks(data, opts, now, memory=None):
              memory=memory.setdefault("silent_since", {})),
         safe("devices.battery", checks.check_batteries, s, ents, warn_pct=opts.get("battery_warn_pct", 25),
              now=now, stale_h=opts.get("silent_hours", 24)),
-        safe("devices.flapping", checks.check_flapping, data.get("history_24h"), flaps),
+        safe("devices.flapping", checks.check_flapping, data.get("history_24h"), flaps,
+             platforms={e.get("entity_id"): e.get("platform") for e in ents if isinstance(e, dict)}
+             if isinstance(ents, list) else None),
         safe("automations.stopped", checks.check_automations, s, now, memory.setdefault("triggers", {}),
              exceptions=list(opts.get("automation_exceptions", [])) + sorted(rarely)),
         safe("system.disk", checks.check_disk, data.get("host")),
@@ -314,11 +317,15 @@ def run_checks(data, opts, now, memory=None):
             out.append(checks.unknown("watch.invalid", f"bad watch entry {rule['invalid']!r}: {rule['error']}"))
             continue
         out.append(safe(f"watch.{rule['entity']}", checks.check_watched_entity, s_all, rule, now))
+    if not opts.get("fix_offers"):                # off (the default): no entity ids for fix offers leave the house
+        for r in out:
+            if isinstance(r.get("evidence"), dict):
+                r["evidence"].pop("fixable", None)
     return out
 
 
-def build_card(opts, ha_version, results, errors, now):
-    return {
+def build_card(opts, ha_version, results, errors, now, published=None):
+    card = {
         "schema": SCHEMA,
         "report_id": str(uuid.uuid4()),
         "site": opts["site_id"],
@@ -328,6 +335,41 @@ def build_card(opts, ha_version, results, errors, now):
         "checks": results,
         "read_errors": errors,
     }
+    if opts.get("fix_offers"):
+        # The offer ids now in our sensor: central pushes a "Watson can fix" button only for these.
+        card["fix_offers_published"] = [str(i) for i in (published or [])][:FIX_OFFERS_MAX]
+    return card
+
+
+FIX_KINDS = {"reload_entry": "entity_id", "reload_stuck": "entry_id", "restart_app": "slug", "outlet_off": "entity_id"}
+FIX_TARGET = {"entity_id": re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$"),
+              "entry_id": re.compile(r"^[A-Za-z0-9_-]{1,64}$"), "slug": re.compile(r"^[a-z0-9_-]{1,64}$")}
+FIX_ID = re.compile(r"^[A-Za-z0-9]{8,64}$")
+FIX_OFFERS_MAX = 5
+
+
+def fix_offers(reply, opts):
+    """Central's offers for the sensor's `fix_offers` attribute, which the house's HA package (watson_fix) checks a
+    button's id against. Empty when the option is off or central sent nothing (so every button stops working); each
+    offer is re-validated here, only the known kinds with a well-formed target get through."""
+    if not opts.get("fix_offers") or not isinstance(reply, dict) or not isinstance(reply.get("fix_offers"), list):
+        return []
+    out = []
+    for o in reply["fix_offers"][:FIX_OFFERS_MAX]:
+        if not isinstance(o, dict) or o.get("kind") not in FIX_KINDS:
+            continue
+        field = FIX_KINDS[o["kind"]]
+        oid, target, expires = o.get("id"), o.get(field), o.get("expires")
+        if not (isinstance(oid, str) and FIX_ID.match(oid) and isinstance(target, str)
+                and FIX_TARGET[field].match(target) and isinstance(expires, str)):
+            continue
+        try:
+            datetime.fromisoformat(expires)
+        except ValueError:
+            continue
+        out.append({"id": oid, "kind": o["kind"], field: target, "label": str(o.get("label") or "")[:60],
+                    "expires": expires})
+    return out
 
 
 def household_list(reply, results):
@@ -403,11 +445,13 @@ def check_details(reply, results):
     return out
 
 
-def house_status(reply, results, persona="Watson", idle_outlets=None):
+def house_status(reply, results, persona="Watson", idle_outlets=None, offers=None):
     """Our sensor's state + attributes, so the household sees their house assistant's status in HA.
     `idle_outlets`: outlets on at ~0 W for hours (not Keep on / Maintenance), for the house's own turn-off self-heal
     (blueprint `turn_off_idle_outlets`) to act on. The App only lists them; Home Assistant decides and switches.
-    `checks`: the detail behind `messages` (check_details)."""
+    `checks`: the detail behind `messages` (check_details).
+    `fix_offers`: what central offered to fix (fix_offers()); HA's watson_fix package acts on a tapped id only if it
+    is listed here. The App never acts on them itself."""
     messages = household_list(reply, results)
     state = "attention" if messages else "all_good"
     summary = "all good" if not messages else f"{len(messages)} things need attention"
@@ -423,6 +467,7 @@ def house_status(reply, results, persona="Watson", idle_outlets=None):
         "idle_outlets": [{"switch": k, "meter": v["meter"], "hours": v["hours"]}
                          for k, v in sorted((idle_outlets or {}).items())][:30],
         "checks": check_details(reply, results),
+        "fix_offers": list(offers or []),
     }}
     return body
 
@@ -461,6 +506,16 @@ def repost_status(token, body):
     return True
 
 
+PUBLISHED_KEY = "fix_offers_published"
+
+
+def remember_published(ids, path=MEMORY_FILE):
+    """The offer ids written into our sensor this run, echoed in the next card (build_card)."""
+    mem = load_memory(path)
+    mem[PUBLISHED_KEY] = list(ids)
+    save_memory(mem, path)
+
+
 def cycle(opts, token):
     now = datetime.now(UTC)
     data, ha_version = gather(token)
@@ -468,19 +523,23 @@ def cycle(opts, token):
     results = run_checks(data, opts, now, memory)
     if data.get("states") is not None:  # don't overwrite memory with nothing when HA was unreadable
         save_memory(memory)
-    card = build_card(opts, ha_version, results, data["errors"], now)
+    card = build_card(opts, ha_version, results, data["errors"], now, memory.get(PUBLISHED_KEY))
     reply = None
     try:
         reply = http("POST", opts["central_url"].rstrip("/") + "/v1/report", opts["site_key"], card)
         log.info("report sent: %s", (reply or {}).get("score"))
     except Exception as exc:  # noqa: BLE001
         log.error("could not reach central: %s", exc)
-    status = None
+    status, published = None, []
     try:
-        status = house_status(reply, results, opts.get("persona") or "Watson", data.get("idle_outlets"))
+        offers = fix_offers(reply, opts)
+        status = house_status(reply, results, opts.get("persona") or "Watson", data.get("idle_outlets"), offers)
         write_house_status(token, status)
+        published = [o["id"] for o in offers]
     except Exception as exc:  # noqa: BLE001 — kept anyway: repost_status puts it there once HA answers
         log.error("could not write %s: %s", STATUS_ENTITY, exc)
+    if published or memory.get(PUBLISHED_KEY):
+        remember_published(published)
     if opts.get("healthchecks_url"):
         try:
             _opener.open(opts["healthchecks_url"], timeout=10)
