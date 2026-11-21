@@ -451,6 +451,11 @@ def check_batteries(states, entity_registry, warn_pct=25, fail_pct=10, exclude_p
 
 KEEP_TRIGGERS = 30        # trigger times remembered per automation (house-side only)
 MIN_TRIGGERS = 5          # need this many (4 gaps) before judging "stopped"
+# HK-12: the triggers must also fall on this many different days, or fill the whole memory (a steady, frequent
+# automation). An automation that only runs during an incident (backup heat hourly through one fault night, a
+# short-cycle warning every 7 h for two days) otherwise learns the incident's pace and reads "stopped" once the
+# furnace is fine again.
+MIN_TRIGGER_DAYS = 4
 
 
 def _median(xs):
@@ -509,6 +514,9 @@ def check_automations(states, now, memory=None, factor=4, min_silent_h=48, excep
             learning += 1
             continue
         times = [parse_ts(t) for t in seen]
+        if len(seen) < KEEP_TRIGGERS and len({t.date() for t in times}) < MIN_TRIGGER_DAYS:
+            learning += 1          # a burst (HK-12): no usual pace yet
+            continue
         gap_h = _median([(b - a).total_seconds() / 3600 for a, b in pairwise(times)])
         silent_h = (now - times[-1]).total_seconds() / 3600
         if silent_h > max(factor * gap_h, min_silent_h):
@@ -971,8 +979,10 @@ def check_maintenance(entity_registry, device_registry, states, now, memory=None
         limit = f"past their date or over {max_days} d" if late else f"over {max_days} d"
         told = (f"are past their parked date or have been in maintenance for over {max_days} days" if late
                 else f"have been in maintenance for over {max_days} days")
+        # Operator-only (B-0095): the household cannot act on "8 things in maintenance", so it is not in their
+        # note; the wording is kept for the operator's views.
         return result(cid, WARN, f"{len(over)} in maintenance {limit}: {listed}; fix or take the label off",
-                      f"{len(over)} thing(s) {told}.", "household", ev)
+                      f"{len(over)} thing(s) {told}.", "operator", ev)
     listed = ", ".join(names[k] for k in list(names)[:8])
     return result(cid, PASS, f"{len(names)} in maintenance (not checked): {listed}", evidence=ev)
 

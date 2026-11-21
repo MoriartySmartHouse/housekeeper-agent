@@ -32,9 +32,10 @@ def test_bad_watch_entries_become_unknown_not_crash():
 
 def test_central_empty_household_list_is_respected():
     """MEDIUM-6: [] from central means 'all silenced/fine', not 'no answer'."""
-    local = [{"household": "battery low", "status": "WARN"}]
+    local = [{"household": "battery low", "status": "WARN", "audience": "household"},
+             {"household": "8 thing(s) in maintenance", "status": "WARN", "audience": "operator"}]
     assert agent.household_list({"household": []}, local) == []
-    assert agent.household_list(None, local) == ["battery low"]
+    assert agent.household_list(None, local) == ["battery low"]      # B-0095: operator wording stays out
 
 
 def test_central_url_rules():
@@ -217,7 +218,7 @@ def test_idle_outlets_reach_the_status_sensor_but_not_central():
 
 
 def test_rarely_used_label_keeps_an_automation_off_the_stopped_list():
-    gaps = [NOW - timedelta(days=10) + timedelta(hours=2 * i) for i in range(6)]
+    gaps = [NOW - timedelta(days=16) + timedelta(days=i) for i in range(6)]       # daily, on 6 days (HK-12)
     mem = {"triggers": {"automation.cube": [t.isoformat() for t in gaps]}}
     st = [{"entity_id": "automation.cube", "state": "on",
            "attributes": {"friendly_name": "Cube", "last_triggered": gaps[-1].isoformat()}}]

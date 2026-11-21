@@ -374,11 +374,13 @@ def fix_offers(reply, opts):
 
 def household_list(reply, results):
     """Central's answer wins, including an empty list (= everything silenced or fine).
-    Only when central could not be reached do we fall back to the local checks."""
+    Only when central could not be reached do we fall back to the local checks: household-facing ones only, as
+    central does (an operator check's wording, like the Maintenance reminder, is not for the household)."""
     if isinstance(reply, dict) and isinstance(reply.get("household"), list):
         return [str(m)[:200] for m in reply["household"][:10]]
     return [r["household"] for r in results
-            if r.get("household") and r.get("status") in (checks.WARN, checks.FAIL)]
+            if r.get("household") and r.get("audience") == "household"
+            and r.get("status") in (checks.WARN, checks.FAIL)]
 
 
 def detail_items(check):

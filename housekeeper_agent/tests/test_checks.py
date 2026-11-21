@@ -686,3 +686,44 @@ def test_parked_until_reminds_the_day_after_and_not_on_the_day():
     assert checks.check_maintenance([], devs, [], on_day, {})["status"] == "PASS"
     c = checks.check_maintenance([], devs, [], on_day + timedelta(days=1), {})     # first seen today: the date decides
     assert c["status"] == "WARN" and "past their" in c["household"] and c["evidence"]["parked"][0]["over"] is True
+
+
+def test_hk12_a_one_night_burst_is_not_a_usual_pace():
+    # 10-15/16: backup heat released hourly through one fault night, the short-cycle warning every ~7 h for two
+    # days. Two quiet days later both read "stopped" before HK-12.
+    mem = {}
+    night = datetime(2026, 10, 15, 22, tzinfo=UTC)
+    for h in range(10):
+        checks.check_automations([_auto("automation.backup_heat", last=night + timedelta(hours=h),
+                                        name="[HVAC] Backup heat")], night + timedelta(hours=h, minutes=5), mem)
+    warn = datetime(2026, 10, 15, 6, tzinfo=UTC)
+    for i in range(7):
+        checks.check_automations([_auto("automation.short_cycle", last=warn + timedelta(hours=7 * i),
+                                        name="Furnace Short-Cycle Warn")], warn + timedelta(hours=7 * i, minutes=5),
+                                 mem)
+    later = datetime(2026, 10, 18, 12, tzinfo=UTC)
+    r = checks.check_automations([_auto("automation.backup_heat", last=night + timedelta(hours=9),
+                                        name="[HVAC] Backup heat"),
+                                  _auto("automation.short_cycle", last=warn + timedelta(hours=42),
+                                        name="Furnace Short-Cycle Warn")], later, mem)
+    assert r["status"] == "PASS" and r["evidence"]["learning"] == 2
+
+
+def test_hk12_a_steady_frequent_automation_is_still_judged():
+    mem = {}
+    t0 = datetime(2026, 10, 1, 8, tzinfo=UTC)
+    for i in range(checks.KEEP_TRIGGERS + 2):                      # every 30 min: a full memory inside one day
+        last = t0 + timedelta(minutes=30 * i)
+        checks.check_automations([_auto("automation.motion", last=last, name="Hall motion")],
+                                 last + timedelta(minutes=1), mem)
+    r = checks.check_automations([_auto("automation.motion", last=last, name="Hall motion")],
+                                 last + timedelta(days=3), mem)
+    assert r["status"] == "WARN" and "Hall motion" in r["reason"]
+
+
+def test_maintenance_reminder_is_for_the_operator_not_the_household():
+    devs = [{"id": "g", "name": "Garage", "labels": ["maintenance"]}]
+    mem = {}
+    checks.check_maintenance([], devs, [], NOW, mem)
+    c = checks.check_maintenance([], devs, [], NOW + timedelta(days=15), mem)
+    assert c["status"] == "WARN" and c["audience"] == "operator" and c["household"]

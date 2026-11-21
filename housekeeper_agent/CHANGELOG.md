@@ -12,6 +12,11 @@
   or Zigbee/Z-Wave/MQTT devices), and Watson's sensor gets the Housekeeper service's offers (attribute `fix_offers`)
   for the house's `watson_fix` automation to check a tapped button against. The App still never acts; off = nothing
   new leaves the house and the list stays empty.
+- **Stopped firing learns from normal days, not an incident.** An automation's usual pace now needs triggers on at
+  least 4 different days (or a full memory of a steady, frequent one). Backup heat that ran hourly through one fault
+  night no longer reads "stopped" once the furnace is fine (HK-12).
+- **The Maintenance reminder is for whoever looks after the house**, not the household's note: "8 things have been in
+  maintenance for over 14 days" is no longer a household message, also when central cannot be reached.
 
 ## 0.1.16
 - **Watson's sensor carries the detail.** New attribute `checks` on `sensor.housekeeper_status`: each concern with its
