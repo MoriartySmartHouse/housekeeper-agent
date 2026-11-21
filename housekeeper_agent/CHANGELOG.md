@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.17 (2026-11-21)
 - **Self-heals back off and give up.** The reload-a-device, reload-a-stuck-integration and restart-an-App blueprints
   now wait longer before each new try (each gap at least as long as the thing had already been down: about 5 min,
   6 h, 12 h, 24 h, 48 h) and, once it has been down longer than the new **Give up after** (default 72 h), write one

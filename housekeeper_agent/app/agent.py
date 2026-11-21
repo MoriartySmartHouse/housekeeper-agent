@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 import checks
 from websockets.sync.client import connect
 
-VERSION = "0.1.16"
+VERSION = "0.1.17"
 SCHEMA = 1
 SUPERVISOR = "http://supervisor"
 CORE_WS = "ws://supervisor/core/websocket"
