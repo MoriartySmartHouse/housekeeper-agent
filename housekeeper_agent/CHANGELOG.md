@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- **Watched entities keep their bad-since clock across a reload.** A template reload re-creates the entity
+  (unavailable for a second, then its restored state), which resets HA's `last_changed`. A watched entity that was
+  already failing used to drop back to a warning and then fail again a minute later as if new. The agent now
+  remembers when each watched entity went bad (in `/data/memory.json`) and keeps that time while the entity is
+  unknown/unavailable and comes back to the same bad state; a real good state starts a new clock.
+
 ## 0.1.17 (2026-11-21)
 - **Self-heals back off and give up.** The reload-a-device, reload-a-stuck-integration and restart-an-App blueprints
   now wait longer before each new try (each gap at least as long as the thing had already been down: about 5 min,

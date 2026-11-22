@@ -821,9 +821,15 @@ def check_supervisor(resolution):
     return result(cid, PASS, "Supervisor healthy", evidence=ev)
 
 
-def check_watched_entity(states, rule, now):
+def check_watched_entity(states, rule, now, memory=None):
     """Site-specific: an entity must not sit in a bad state longer than `for_min`.
-    rule = {"entity": "sensor.alarm_status", "bad": ["Fault"], "for_min": 60}"""
+    rule = {"entity": "sensor.alarm_status", "bad": ["Fault"], "for_min": 60}
+
+    `memory` ({entity: {"state", "since"}}, kept in /data/memory.json like zero_power) holds when the entity went
+    bad. A template reload re-creates the entity (unavailable for a second, then the restored bad state), which
+    resets last_changed; without memory the check would drop FAIL -> WARN and raise FAIL again as new. So the clock
+    is kept while the entity is unknown/unavailable and comes back to the same bad state; only a real good state
+    (or a different bad state) resets it."""
     eid = rule.get("entity", "?")
     cid = f"watch.{eid}"
     if not isinstance(states, list):
@@ -831,9 +837,24 @@ def check_watched_entity(states, rule, now):
     st = next((s for s in states if s.get("entity_id") == eid), None)
     if st is None:
         return unknown(cid, f"{eid} does not exist")
+    memory = {} if memory is None else memory
+    state = st.get("state")
     since = parse_ts(st.get("last_changed"))
-    ev = {"state": st.get("state"), "since": since and since.isoformat()}
-    if st.get("state") in rule.get("bad", []):
+    bad = state in rule.get("bad", [])
+    if bad:
+        kept = memory.get(eid) if isinstance(memory.get(eid), dict) else {}
+        try:
+            kept_since = parse_ts(kept.get("since")) if kept.get("state") == state else None
+        except (ValueError, TypeError):
+            kept_since = None
+        if kept_since and (since is None or kept_since < since):
+            since = kept_since
+        if since:
+            memory[eid] = {"state": state, "since": since.isoformat()}
+    elif state not in ("unknown", "unavailable"):
+        memory.pop(eid, None)                       # a real good state: the next bad spell starts a new clock
+    ev = {"state": state, "since": since and since.isoformat()}
+    if bad:
         mins = (now - since).total_seconds() / 60 if since else 0
         if mins >= rule.get("for_min", 60):
             return result(cid, FAIL, f"{eid} = {st.get('state')} for {round(mins)} min", evidence=ev)

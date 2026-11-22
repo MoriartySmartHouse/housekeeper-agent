@@ -125,6 +125,39 @@ def test_watched_estate_fault():
     assert checks.check_watched_entity(st, rule, NOW)["status"] == "PASS"
 
 
+def test_watched_reload_blip_keeps_bad_since():
+    """B-0297: a template reload re-creates the entity (unavailable ~1 s, then the restored bad state) and resets
+    last_changed. The bad-since clock must survive that, so FAIL stays FAIL instead of WARN then a 'new' FAIL."""
+    rule = {"entity": "sensor.furnace_health", "bad": ["warn"], "for_min": 60}
+    mem = {}
+    st = [{"entity_id": "sensor.furnace_health", "state": "warn", "last_changed": iso(3)}]
+    r = checks.check_watched_entity(st, rule, NOW, mem)
+    assert r["status"] == "FAIL" and r["evidence"]["since"] == iso(3)
+    st[0].update(state="unavailable", last_changed=iso(0.01))         # the reload blip itself
+    assert checks.check_watched_entity(st, rule, NOW, mem)["status"] == "PASS"
+    assert "sensor.furnace_health" in mem                             # ... does not forget when it went bad
+    st[0].update(state="warn", last_changed=iso(0.005))               # restored state, fresh last_changed
+    r = checks.check_watched_entity(st, rule, NOW, mem)
+    assert r["status"] == "FAIL" and r["evidence"]["since"] == iso(3) and "180 min" in r["reason"]
+
+
+def test_watched_real_recovery_resets_bad_since():
+    rule = {"entity": "sensor.furnace_health", "bad": ["warn", "fault"], "for_min": 60}
+    mem = {}
+    st = [{"entity_id": "sensor.furnace_health", "state": "warn", "last_changed": iso(3)}]
+    assert checks.check_watched_entity(st, rule, NOW, mem)["status"] == "FAIL"
+    st[0].update(state="ok", last_changed=iso(0.5))                   # really recovered
+    assert checks.check_watched_entity(st, rule, NOW, mem)["status"] == "PASS" and mem == {}
+    st[0].update(state="warn", last_changed=iso(0.25))                # bad again: a new clock
+    assert checks.check_watched_entity(st, rule, NOW, mem)["status"] == "WARN"
+    mem["sensor.furnace_health"] = {"state": "warn", "since": iso(3)}
+    st[0].update(state="fault", last_changed=iso(0.25))               # a different bad state starts its own clock
+    assert checks.check_watched_entity(st, rule, NOW, mem)["status"] == "WARN"
+    mem["sensor.furnace_health"] = {"state": "warn", "since": "garbage"}
+    st[0].update(state="warn")
+    assert checks.check_watched_entity(st, rule, NOW, mem)["status"] == "WARN"   # bad memory never crashes
+
+
 # ---- review fixes (Fable review 2026-10-08)
 
 def test_stale_device_flagged_when_z2m_availability_off():

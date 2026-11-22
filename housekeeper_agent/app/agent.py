@@ -316,7 +316,8 @@ def run_checks(data, opts, now, memory=None):
         if "invalid" in rule:
             out.append(checks.unknown("watch.invalid", f"bad watch entry {rule['invalid']!r}: {rule['error']}"))
             continue
-        out.append(safe(f"watch.{rule['entity']}", checks.check_watched_entity, s_all, rule, now))
+        out.append(safe(f"watch.{rule['entity']}", checks.check_watched_entity, s_all, rule, now,
+                        memory.setdefault("watch_bad_since", {})))
     if not opts.get("fix_offers"):                # off (the default): no entity ids for fix offers leave the house
         for r in out:
             if isinstance(r.get("evidence"), dict):
